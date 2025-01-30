@@ -1,2 +1,2 @@
-# ecalipy
+# ECaliPy
 Calibrating ERT via EMI
