@@ -1,6 +1,9 @@
 # ECaliPy
 Calibrating ERT via EMI
 
+Feb. 26, 2025
+Ray to provide steps for using GitHub; cloning the repository, authenticating your local machine, and pulling and pushing files. 
+
 Ray edited this file and pushed it to GitHub.
 
 
