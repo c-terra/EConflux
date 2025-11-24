@@ -1,0 +1,11 @@
+numpy<2.0.0
+matplotlib
+pandas
+scipy
+requests
+chardet
+psutil
+pyvista==0.37.0
+pyvistaqt==0.9.0
+PyQt5
+vtk

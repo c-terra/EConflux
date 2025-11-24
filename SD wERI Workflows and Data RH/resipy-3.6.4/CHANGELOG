@@ -1,0 +1,272 @@
+v3.6.3
+------
+- Added module sequence generation (min/max a, n or s parameters)
+- Fix post-processing resitivity inversion error going to 0 after filtering (display bug)
+- Fix modelDOI after forward modelling
+- Fix Wine not installed on macOS
+- Added option to filter line/string numbers from forward modelling
+- Added support for Syscal binary .bin/.binx
+- Fix white area on side of inverted section
+- Updated Sting parser to work for any 3D geometry
+- Crop reference mesh in timelapse inversion
+- Duplicated readings are now averaged and not removed
+- Add ability to export command sequences of different types in UI
+- Fix sign for apparent values (#630)
+- Added cropping function for 3D mesh
+- Full Changelog: https://github.com/hkexgroup/resipy/compare/v3.6.2...v3.6.3
+
+
+v3.6.2
+------
+- Add filter-by electrode labels to the pre-processing.
+- Add pre-processing pseudo section in 3D.
+- Add ability to use user-supplied error (as weight in the inversion).
+- Add merged format (import multiple datasets across multiple time steps). 
+- Added export options tab.
+- Tweaked 3D meshing (improving discretization for irregular grids).
+- Bug fix: pseudo-section when removing one electrode (#620).
+- Bug fix: 3D forward modelling (#556).
+- Bug fix: computation of modeling error magnitudes.
+- Bug fix: IP workflow causing modeling errors to crash (#617).
+- Bug fix: Survey DataFrames incorrectly indexed when electrodes removed.
+
+
+v3.5.4
+------
+- Bug fix: Reciprocal error miscalculation
+- Bug fix: Duplicate MN/AB measurements are filtered 
+- Bug fix: All ABMN reciprocal possibilities are checked
+
+
+v3.5.3
+------
+- Remote electrodes usable with a quadrilateral mesh.
+- Apparent resistivity calculations tweaked.
+- 2D meshing defaults to 4 elements between electrodes
+- Non UTF-8 import possible for certain formats.
+- Add ability to convert UTM coordinates to local grid.
+- Bug fix: Reciprocal measurements now filtered in timelapse mode.
+- Bug fix: Sign of apparent resistivities is no longer altered.
+- Bug fix: The 3D threshold filter. 
+- Bug fix: Remote electrodes work with pseudo 3D and 2D inversions.
+- Bug fix: Better fine mesh depth calculated during forward modeling.
+- Bug fix: 3D meshing where both surface and buried electrodes are present.
+- Bug fix: Missing topography of remote electrodes
+
+
+v3.5.1
+------
+- Improved meshing borehole surveys (2D and 3D).
+- Bug fix: Pre-processing range filtering indexing error.
+- Bug fix: ResIPy UI crashes when doing a 2D forward model. 
+- Bug fix: Lippmann parser to handle missing data.
+- Bug fix: RESIMGR parser to handle presence of electrode geometry.
+---- v3.5.0 ----
+- Introduction of project summary page.
+- Major speed improvements to the loading data.
+- Ability to make an error model for non-conventional arrays.
+- Ability to create 3D mesh from a single 2D line.
+- More efficient 3D meshing (hemispherical half space).
+- Faster reciprocal error calculation.
+- Ability to calculate app. resistivity for XBH/buried electrodes.
+- Native support for Apple Silicon devices.
+- Support for python v3.7 to v3.12.
+- Bug fix: 3D difference inversion (time-lapse).
+- Bug fix: ResIPy crash when doing an error model in 3D surveys (UI).
+- Bug fix: vmin/vmax in log scale in results (UI).
+- Bug fix: pseudo section electrodes being in the air (UI).
+
+
+v3.4.5
+------
+- Add ability to change electrode size in 3D (API only).
+- Buried electrodes are shown in pseudo section.
+- Time-lapse measurements are matched to the reference survey only.
+- Add volume calculation in the 3D.
+- Bug fix: Custom mesh regions now recognised.
+- Bug fix: 3D mesh refinement stability improved.
+- Bug fix: Fix for mesh regions/zones not being parsed (UI).
+- Bug fix: Fixed mesh being cropped in 3D viewer.
+- Bug fix: Geometric factor recomputed after forward modelling.
+- Bug fix: add data to a survey even if reciprocals are present.
+- Bug fix: Log scale for small values shows scientific values. 
+
+
+v3.4.2
+------
+- Bug fix: fixing mesh zones
+- Bug fix: matchSurveys() removing duplicates
+- Bug fix: cylinder mesh stability
+- Bug fix: buried electrodes not read (GUI only)
+- Bug fix: pre-processing reset filter
+- Bug fix: improving unresponsiveness
+
+
+v3.4.1
+------
+- Bug fix: creating 3D survey from 2D lines (GUI only)
+** v3.4.0 **
+- Improved meshing for 3D surface arrays.
+- Support for 3D tetrahedral cylinder meshes.
+- Parsing contact resistance information (pseudo section).
+- Ability to slice 3D meshes along a line (e.g., electrodes).
+- Ability to convert tape-measured X to true X (2D only).
+- Add custom parser for timelapse or batch (API only)
+- Various bug fixes.
+
+
+v3.3.3
+------
+- Bug fix: remote electrodes in 3D mesh generation
+- Bug fix: Custom Parser importing correctly
+- Bug fix: Importing protocol surveys
+- Bug fix: Save Res2DInv format data
+- Bug fix: BERT parser
+- Bug fix: ARES parser
+- Bug fix: Matplotlib xticklabel
+- Bug fix: Starting resistivity 
+- Bug fix: Add wine64 path for apple silicon devices
+- Bug fix: Pandas 1.4.0 not reading time-lapse data (internal) 
+- Bug fix: 3D tetrahedral mesh refinement
+
+
+v3.3.2
+------
+- Add ability to clip corners of the inverted plots (2D)
+- Syscal parser now natively supports 3D coordinates (Prosys 3)
+- Ability to merge the electrodes that are too close
+- Ability to contour pseudo 3D plots
+- Ability to export individual line vtk files (pseudo 3D)
+- Bug fix: mesh refinement not working properly
+- Bug fix: custom parser account for remote electrodes
+- Bug fix: DAS-1 parser accounts for no-data inputs
+- Bug fix: FMD in pseudo 3D
+
+
+v3.3.1
+------
+- New tetrahedral 'Column' and 'Tank' mesh designs for 3D inversion/modeling
+- Add support for Gmsh v4.x.x
+- Redesign of mesh tab for 3D
+- Add support for QThread during inversion (prevent 'app non responsive' message)
+- Add "Delaunay 3D" filter - similar to 2D contouring for 3D volumes
+- Add support for Prosys III file format and integrated 3D grid
+- Bug fixing in the UI
+- Bug fixing with save/load project
+
+
+v3.2.3
+------
+- Bug fix: Pseudo 3D rotation of 2D meshes and UTM coordinates
+---- v3.2.2 ----
+- Bug fix: Ordering of neighbor matrix for advanced mesh format
+- Bug fix: Pseudo 3D IP 
+- Bug fix: Batch project saving/loading
+- Bug fix: Minor UI fixes
+- Bug fix: 3D time-lapse inversion
+- Adding column mesh examples
+---- v3.2.0 ----
+- Pseudo 3D survey from any 2D surveys
+- 3D time-lapse (difference from background) inversion 
+- 3D survey from any 2D surveys
+- Efficient mesh format (improved 3D inversion)
+- API log (converts UI action to Python format)
+- DAS-1 format support
+- Options menu:
+-- Save/Load project
+-- Dark mode
+-- Restart GUI
+- Bug fix: Borehole 3D inversion
+- Bug fix: Remote electrode in borehole
+
+
+v3.0.3
+------
+- Bug fix: Showing iteration for 3D surveys (#342)
+- Bug fix: Ignore comments in BERT parser 
+- Meshing improvements
+- Update help (please read)
+
+
+v3.0.2
+------
+- Bug fix: design Mesh throwing ".isnan() attribute not found"
+- Bug fix: Xbh hot fix
+
+
+v3.0.1
+------
+- Bug fix: zoning in mesh generation
+- Bug fix: custom sequence importation in 3D forward modeling
+- Bug fix: 3D borehole forward modeling
+- Bug fix: 3D IP forward modeling
+
+
+v3.0.0
+------
+- 3D forward modeling in the GUI
+- Ability to define custom-equation maps
+- 3D pseudo section visualization
+- Support for 3D remote electrodes (pole-pole/dipole)
+- Minor bug fixes
+
+
+v2.2.2
+------
+- Add 3D interactive plotting capabilities by the use of pyvista (mesh and inversion plots).
+- Add electrode labeling capabilities ('a','b','m','n' columns are now string).
+- More robust pre- and post-porcessing filtering capabilities.
+- Better pseudo-section calculations.
+- Ability to crop mesh below a certain depth (crop below accepted DOI).
+- Ability to parse E4D and BERT files directly (2D and 3D).
+- Ability to export data in E4D format (add to Res2Dinv format).
+- Ability to interpolate missing topography points.
+- Ability to parse externally calculated error models (Custom parser)
+- Fix issue with forward modeling error.
+- Fix issue with buried electrodes and whole space problems.
+- Fix SVD error on some Windows 10 laptops.
+- Reporting if more RAM is required than available for the inversion.
+
+
+v2.0.2
+------
+- Fix issues due to remote electrodes
+- Implement a new routine to compute the depth of investigation (DOI) based on
+  Oldenburg and Li (1999) method
+
+
+v2.0.1
+------
+-Fix bug where _MEIxxxx temporary folder not removed after exiting the app (Windows only)
+-Fix custom sequence not reading two first lines
+-Improved display scaling for high DPI screen
+
+
+v2.0.0
+------
+-New forward modeling tab design
+-Ability to design model before meshing
+-Capability of individual data analysis (batch/time-lapse only)
+-Uniform methods names (API)
+-Faster 3D mesh interpolation
+-Support for "Lippmann" data input
+-Addition of sensitivity slider (inversion)
+-Interactive post processing (similar to pre-processing)
+-Minor bug fixes
+
+
+v1.0.2
+------
+-WPI implementation for 3D survey but not enable in the interface. Different
+-forward model are now available with explanation.
+
+
+v1.0.1 (=v1.05 in non semantic versioning)
+------------------------------------------
+-Important bug corrections from v1.0.0
+
+
+v1.0.0
+------
+-First release version featuring full 2D inversion, time-lapse inversion for both
+-DC and IP + filtering options.
