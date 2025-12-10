@@ -1,2 +1,0 @@
-ResIPy_Version:
-3.6.3

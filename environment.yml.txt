@@ -1,0 +1,17 @@
+name: econflux
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - pip
+  - pip:
+      - hydrostats
+      - hydroeval
+      - pysymlog

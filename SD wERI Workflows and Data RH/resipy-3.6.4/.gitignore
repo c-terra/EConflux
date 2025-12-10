@@ -1,5 +1,0 @@
-**/.ipynb_checkpoints/**
-**/__pycache__/**
-src/resipy/invdir/
-doc/_build/*
-src/resipy/cext/build
