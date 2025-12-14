@@ -194,7 +194,7 @@ class em2er_map:
 
     def _map_to_mesh(self):
         #import testcalib function, needs to be available outside this script
-        from testcalib import DataMapper
+        from er2em import DataMapper
 
 	#map EMI data to ERI mesh using select parameters
         mapper = DataMapper(**self.mapvars) 

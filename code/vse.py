@@ -12,17 +12,17 @@ import seaborn as sns
 import hydrostats as hs
 import hydroeval as he
 from scipy.stats import spearmanr
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 import matplotlib as mpl
 import matplotlib.cm as cm
 import math
 import matplotlib.ticker
 import matplotlib.colors as clr
+import matplotlib.patheffects as pe
 import pysymlog as psl
 psl.register_mpl()
 
-plt.rcParams['font.size'] = 10
+plt.rcParams['font.size'] = 14
 plt.rcParams['font.family'] = 'arial'
 
 class EConfluxStats:
@@ -79,7 +79,8 @@ class EConfluxStats:
         self.units = units
         
         self.ticks = ticks
-
+        self.ticktypes = list(type(item) for item in ticks)
+        
         # Set default font properties
         
         
@@ -184,120 +185,100 @@ class EConfluxStats:
         X_log = np.log10(x)
         Y_log = np.log10(y)
 
-        reg = LinearRegression().fit(X_log.values.reshape(-1, 1), Y_log.values.reshape(-1, 1))
-        b = reg.coef_[0]
-        log_a = reg.intercept_
-        a = 10 ** log_a
-        r2 = r2_score(Y_log.values.reshape(-1, 1), reg.predict(X_log.values.reshape(-1, 1)))
+        coeffs = np.polyfit(X_log, Y_log, 1)
+        p = np.poly1d(coeffs)
+        pred_y = p(X_log)
 
-        return a, b, r2, reg
+        a = 10**coeffs[1]
+        b = coeffs[0]
+        r2 = r2_score(X_log.values.reshape(-1, 1), pred_y.reshape(-1, 1))
+
+        return a, b, r2, p
 
     # ==============================================================
     # -------------------- VISUALIZATION METHODS -------------------
     # ==============================================================
     
-    def scatter_plots(self, figname=None):
+    def scatter_plots(self, log=True, grayscale=False, figname=None):
         """
         Scatter plots comparing ER vs EM (raw and informed).
         Left panel: log10 scatter of observed values.
         Right panel: log10 scatter with power-law fits.
         """
         # Fit power-law models (raw + informed)
-        a_nc, b_nc, r2_nc, _ = self._powerlaw_fit(self.X, self.y)
-        a_cal, b_cal, r2_cal, _ = self._powerlaw_fit(self.X, self.Y)
+        if log:
+            a_nc, b_nc, r2_nc, _ = self._powerlaw_fit(self.X, self.y)
+            a_cal, b_cal, r2_cal, _ = self._powerlaw_fit(self.X, self.Y)            
     
-        fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+        fig, ax = plt.subplots()
     
-        # -----------------------------------------------------------------
-        # Left: log10 scatter (linearized)
         if (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[0].scatter(self.X, self.y, c='dodgerblue', label=f"{self.informedMethod}" + r"$_{raw}$", alpha=0.6)
-        else:
-            ax[0].scatter(self.X, self.y, c='dodgerblue', label="EM$_{raw}$", alpha=0.6)
-        ax[0].axline((0, 0), slope=1, color="k", linestyle="--", alpha=0.5)
+            if grayscale:
+                ax.scatter(self.X, self.y, marker='o', c='gray', s=20, edgecolor='k', label=f"{self.informedMethod}" + r"$_{raw}$", alpha=1)
+                ax.scatter(self.X, self.Y, marker='o', c='white', s=20, edgecolor='k', label=f"{self.informedMethod}" + r"$_{informed}$", alpha=1)
+            else:
+                ax.scatter(self.X, self.y, marker='o', c='dodgerblue', s=8, label=f"{self.informedMethod}" + r"$_{raw}$", alpha=0.5)
+                ax.scatter(self.X, self.Y, marker='o', c='goldenrod', s=8, label=f"{self.informedMethod}" + r"$_{informed}$", alpha=0.5)
 
-        ax[0].legend(fontsize=8)
-        ax[0].set_title("Raw–Informed Scatter Comparison", self.titleFontKws)
-        ax[0].set_xscale('log')
-        ax[0].set_yscale('log')
-        
-        if (self.ticks is not None) & (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[0].set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
-            ax[0].set_ylabel(f"{self.informedMethod} EC ({self.units})", **self.labelFontKws)
-            ax[0].set_xlim(self.ticks[0], self.ticks[-1])
-            ax[0].set_ylim(self.ticks[0], self.ticks[-1])
-            ax[0].set_xticks(self.ticks)
-            ax[0].set_yticks(self.ticks)
-        elif (self.ticks is None) & (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[0].set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
-            ax[0].set_ylabel(f"{self.informedMethod} EC ({self.units})", **self.labelFontKws)
         else:
-            ax[0].set_xlabel(f"Dataset 1 EC ({self.units})", **self.labelFontKws) 
-            ax[0].set_xlabel(f"Dataset 2 EC ({self.units})", **self.labelFontKws) 
-    
-        ax[0].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax[0].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
-        ax[0].get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax[0].yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
-        
-
-    
-        # -----------------------------------------------------------------
-        # Right: log10 scatter with power-law fits (same style as ax[0])
-        if (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[1].scatter(self.X, self.y, c='dodgerblue', label=f"{self.informedMethod}" + r"$_{raw}$", alpha=0.6)
-            ax[1].scatter(self.X, self.Y, c='goldenrod', label=f"{self.informedMethod}" + r"$_{informed}$", alpha=0.6)
-        else:
-            ax[1].scatter(self.X, self.y, c='dodgerblue', label="EM$_{raw}$", alpha=0.6)
-            ax[1].scatter(self.X, self.Y, c='goldenrod', label="EM$_{informed}$", alpha=0.6)
-        ax[1].axline((0, 0), slope=1, color="k", linestyle="--", alpha=0.5)
+            ax.scatter(self.X, self.y, c='dodgerblue', label="EC$_{raw}$", alpha=0.6)
+            ax.scatter(self.X, self.Y, c='goldenrod', label="EC$_{informed}$", alpha=0.6)
     
         # Power-law fits (log10-transformed for consistency)
         x_fit = np.logspace(np.log10(self.X.min()), np.log10(self.X.max()), 200)
         y_fit_nc = a_nc * x_fit ** b_nc
         y_fit_cal = a_cal * x_fit ** b_cal
     
-        ax[1].plot(x_fit, y_fit_nc, c="royalblue", lw=2, alpha=0.8,
-                   label=f"Raw Fit: a={a_nc[0]:.2f}, b={b_nc[0]:.2f}, R$^2$={r2_nc:.2f}")
-        ax[1].plot(x_fit, y_fit_cal, c="chocolate", lw=2, alpha=0.8,
-                   label=f"Informed Fit: a={a_cal[0]:.2f}, b={b_cal[0]:.2f}, R$^2$={r2_cal:.2f}")
+        if grayscale:
+            ax.plot(x_fit, y_fit_nc, c="dimgray", lw=4, alpha=0.8, path_effects=[pe.Stroke(linewidth=5, foreground='k'), pe.Normal()],
+                       label=f"Raw Fit: a={a_nc:.2f}, b={b_nc:.2f}, R$^2$={r2_nc:.3f}")
+            ax.plot(x_fit, y_fit_cal, c="gainsboro", lw=4, alpha=1, path_effects=[pe.Stroke(linewidth=5, foreground='k'), pe.Normal()],
+                       label=f"Informed Fit: a={a_cal:.2f}, b={b_cal:.2f}, R$^2$={r2_cal:.3f}")
+        else:
+            ax.plot(x_fit, y_fit_nc, c="darkblue", lw=4, alpha=0.8,
+                       label=f"Raw Fit: a={a_nc:.2f}, b={b_nc:.2f}, R$^2$={r2_nc:.3f}")
+            ax.plot(x_fit, y_fit_cal, c="maroon", lw=4, alpha=0.8,
+                       label=f"Informed Fit: a={a_cal:.2f}, b={b_cal:.2f}, R$^2$={r2_cal:.3f}")
 
-        ax[1].legend(fontsize=9, frameon=False)
-        ax[1].set_title("Raw–Informed Scatter Comparison with Power-Law Fits", **self.titleFontKws)
-        ax[1].set_xscale('log')
-        ax[1].set_yscale('log')
+
+        ax.axline((0, 0), slope=1, color="k", linestyle="--", lw=3)
+
+        ax.legend(fontsize=11, frameon=False)
+        ax.set_title("Raw–Informed Scatter Comparison with Power-Law Fits", **self.titleFontKws)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
         
         if (self.ticks is not None) & (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[1].set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
-            ax[1].set_ylabel(f"{self.informedMethod} EC ({self.units})", **self.labelFontKws)
-            ax[1].set_xlim(self.ticks[0], self.ticks[-1])
-            ax[1].set_ylim(self.ticks[0], self.ticks[-1])
-            ax[1].set_xticks(self.ticks)
-            ax[1].set_yticks(self.ticks)
+            ax.set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
+            ax.set_ylabel(f"{self.informedMethod} EC ({self.units})", **self.labelFontKws)
+            ax.set_xlim(self.ticks[0], self.ticks[-1])
+            ax.set_ylim(self.ticks[0], self.ticks[-1])
+            ax.set_xticks(self.ticks)
+            ax.set_yticks(self.ticks)
         elif (self.ticks is None) & (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[1].set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
-            ax[1].set_ylabel(f"{self.informedMethod} EC ({self.units})", **self.labelFontKws)
+            ax.set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
+            ax.set_ylabel(f"{self.informedMethod} EC ({self.units})", **self.labelFontKws)
         else:
-            ax[1].set_xlabel(f"Dataset 1 EC ({self.units})", **self.labelFontKws) 
-            ax[1].set_xlabel(f"Dataset 2 EC ({self.units})", **self.labelFontKws) 
+            ax.set_xlabel(f"Dataset 1 EC ({self.units})", **self.labelFontKws) 
+            ax.set_xlabel(f"Dataset 2 EC ({self.units})", **self.labelFontKws) 
             
-        ax[1].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax[1].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
-        ax[1].get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax[1].yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
+        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
+        ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
         
-    
+        if float not in self.ticktypes:
+            formatter = matplotlib.ticker.StrMethodFormatter("{x:.0f}")
+            plt.gca().xaxis.set_major_formatter(formatter)
+            plt.gca().yaxis.set_major_formatter(formatter)
+
+        
         plt.tight_layout()
         if figname is not None:
             plt.savefig(figname, dpi=300)
         else:
             plt.savefig('scatter.png', dpi=300)
         plt.show()
-    
-        return {
-            "Raw Fit": {"a": a_nc, "b": b_nc, "R$^2$": r2_nc},
-            "Informed Fit": {"a": a_cal, "b": b_cal, "R²": r2_cal}
-        }
     
         return {
             "Raw Fit": {"a": a_nc, "b": b_nc, "R$^2$": r2_nc},
@@ -392,7 +373,8 @@ class EConfluxStats:
 
     def bland_altman(self, sim, obs, 
                      title=None, ax=None, ymin=None, ymax=None, xmin=None, xmax=None, figname=None, 
-                     cbar=False, dcolor=False, dcmap='cividis', dbnds=None, xticks=None, logList=None, legendParams={'plot': True, 'loc': 'best'}):
+                     cbar=False, dcolor=False, dcmap='cividis', dbnds=None, xticks=None, logList=None, legendParams={'plot': True, 'loc': 'best'},
+                     savefig=True):
         """
         Bland–Altman plot with 95% confidence limits.
         Returns summary statistics and shows plot.
@@ -437,9 +419,6 @@ class EConfluxStats:
                         
             cmmapable = cm.ScalarMappable(norm, dcmap)
             
-            # ticks = np.linspace(0, abs(self.data['Z'].min()).round(1), 5)
-            
-            # formattedTicks = np.array([f"{x:.1f}" for x in ticks])
             ax.scatter(mean, diff, c=abs(self.data['Z']), cmap=dcmap, norm=norm, alpha=0.3, marker="+")
             if cbar:
                 cb = plt.colorbar(cmmapable, ax=ax, location='right', orientation='vertical', boundaries=dbnds)
@@ -473,13 +452,12 @@ class EConfluxStats:
             ax.set_xticks(xticks)
         ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
         ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
-        # plt.tight_layout()
-        if figname is not None:
-            plt.savefig(figname, dpi=300)
-        else:
-            plt.savefig('bland_altman.png', dpi=300)
-        # plt.show()
-        
+        if savefig:
+            plt.tight_layout()
+            if figname is not None:
+                plt.savefig(figname, dpi=300)
+            else:
+                plt.savefig('bland_altman.png', dpi=300)        
 
         return {
             "Mean difference": round(mean_diff, 3),
