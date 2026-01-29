@@ -15,6 +15,8 @@ import pandas as pd
 from numpy.polynomial import Polynomial as P
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
+from scipy.interpolate import griddata
+from math import ceil, floor
 
 def local_grid_to_utm_along_line(mesh_df: pd.DataFrame,
                                  utm_pair1: Tuple[float, float],
@@ -97,7 +99,10 @@ def direct_local_grid_to_utm_along_line(local_grid_df, coord_list, polyDeg=3, nu
     if saveElec:
         coord_list.to_csv(elecPath + 'corrElecCoords.csv', index=False)
         
-    return local_grid_df
+    if correctCoords:
+        return local_grid_df, coord_list
+    else:
+        return local_grid_df
 
 class em2er_map:
     """
@@ -110,20 +115,19 @@ class em2er_map:
     elecUTM : pd.DataFrame
         Copy of electrodes from inversion project (k.elec) with UTM 'x', 'y', and 'z'
     emicsv : str
-        Path to the Rutgers-style EMI .csv (X, Y, Depth, Linear Resistivity columns present)
+        Path to the EMI .csv (X, Y, Depth, Linear Resistivity columns present)
     linearOrPoly : str
         Define whether to use a linear or polynomial interpolation to convert UTM to local coordintes
     alphaomega : Tuple[int, int]
-        Positional indexes into elecUTM to define the line direction (defaults to (0, 12) but should be the start and end of your survey line (min elec num, max elec num)).
+        Positional indexes into elecUTM to define the line direction.
+        Defaults to the first and last index of elecUTM but should be the start and end of your survey line (start elec index, end elec index)
+        Only used for local grid to UTM transformation and if linearOrPoly == 'linear'.
+    elecSpacing : float
+        Electrode spacing used in survey. Used to determine survey length. Default is 1.
     polydeg : int
-        Polynomial degree to use for electrode interpolation (if linearOrInterp != 'linear')
+        Polynomial degree to use for electrode interpolation (if linearOrInterp != 'linear'). Default is 3.
     mapvars : dict
         Passed to testcalib.DataMapper(num_neighbors=2, max_distance_xy=5, max_distance_z=0.3) for ease of updating this function down the line.
-    fillstrat : {"mean","value","none"}
-        How to fill NaNs after mapping. "mean" fills each column with its column mean.
-        "value" uses `res0fill`. "none" leaves NaNs.
-    res0fill : Optional[float] #fill with a particular value
-        Value for fillstrat="value".
     emires_col : str
         Column from the mapped dataframe to use for res0 merge
         (default: "_Linear Resistivity_arithmetic_mean", other options available in the DataMapper function).
@@ -138,11 +142,10 @@ class em2er_map:
         emicsv: str,
         linearOrPoly: str,
         alphaomega: Tuple[int, int] = (0, 12),
+        elecSpacing: float = 1,
         polydeg: int = 3,
-        mapvars: Optional[Dict[str, Any]] = None,
-        fillstrat: str = "mean",
-        res0fill: Optional[float] = None,
-        emires_col: str = "_Linear Resistivity_arithmetic_mean",
+        mapvars: Optional[Dict[str, Any]] = dict(num_neighbors=5, max_distance_xy=5, max_distance_z=0.3),
+        emires_col: str = "_Linear Resistivity_arith",
         keep_cols: Tuple[str, str, str] = ("X", "Y", "Z")
     ):
         self.k = k
@@ -150,12 +153,13 @@ class em2er_map:
         self.emicsv = emicsv
         self.linearOrPoly = linearOrPoly
         self.alphaomega = alphaomega
+        self.elecSpacing = elecSpacing
         self.polydeg = polydeg
-        self.mapvars = mapvars or dict(num_neighbors=5, max_distance_xy=5, max_distance_z=0.3)
-        self.fillstrat = fillstrat
-        self.res0fill = res0fill
+        self.mapvars = mapvars
         self.emires_col = emires_col
         self.keep_cols = keep_cols
+
+        self.survLen = (len(elecUTM)-1) * self.elecSpacing
 
         #populated during run()
         self.utm_pair1: Optional[Tuple[float, float]] = None
@@ -165,7 +169,7 @@ class em2er_map:
         self.emi2mesh: Optional[pd.DataFrame] = None
         self.dist = None
 
-    def _prep_mesh_utm(self): #convert electrode positions to UTM from just electrode numbers
+    def prep_mesh_utm(self): #convert electrode positions to UTM from just electrode numbers
         if self.linearOrPoly == 'linear':
             i1, i2 = self.alphaomega
             self.utm_pair1 = (self.elecUTM['x'].iloc[i1], self.elecUTM['y'].iloc[i1])
@@ -178,7 +182,7 @@ class em2er_map:
             meshUTM = meshUTM.rename(columns={'easting': 'x', 'northing': 'y'})
 
         else:
-            meshUTM = direct_local_grid_to_utm_along_line(self.k.mesh.df, self.elecUTM, self.polydeg, checkLine=True)
+            meshUTM = direct_local_grid_to_utm_along_line(self.k.mesh.df, self.elecUTM, self.polydeg, lineLength=self.survLen, checkLine=True)
         #standardize coordinate naming and de-duplicate
         meshUTM = meshUTM.loc[:, ~meshUTM.columns.duplicated()]
 
@@ -186,13 +190,13 @@ class em2er_map:
         meshUTM = meshUTM[['X', 'Y', 'Z', 'x', 'y']]
         self.meshUTM = meshUTM
 
-    def _load_emi(self): #load EMI csv, Rutgers-style
+    def load_emi(self): #load EMI csv
         emi_inv = pd.read_csv(self.emicsv)
         #match column names expected by mapping function
         emi_inv = emi_inv.rename(columns={'X': 'x', 'Y': 'y', 'Depth': 'Z'})
         self.emi_inv = emi_inv
 
-    def _map_to_mesh(self):
+    def map_to_mesh(self):
         #import testcalib function, needs to be available outside this script
         from er2em import DataMapper
 
@@ -202,29 +206,89 @@ class em2er_map:
         self.emi2mesh = emi2mesh.copy()
         self.dist = dist
 
-    def _fill_missing(self):
+    def fill_missing(self, fillstrat='mean', res0fill=None, interpMeth='nearest', interpBounds=None, check=False, plotParams={'vmin': None, 'vmax': None, 'cmap': 'viridis'}):
+        
+        """
+        fillstrat : {"mean","value","interp", "none"}
+            How to fill NaNs after mapping. "mean" fills each column with its column mean.
+            "value" uses `res0fill`. "interpolate" uses scipy.griddata to fill using spatial interpolation, passing 'interpMeth' to griddata. "none" leaves NaNs.
+        res0fill : Optional[float] #fill with a particular value
+            Value for fillstrat="value".
+        interpMeth : Optional[str]
+            Interpolation method to pass to scipy.griddata. Either 'nearest', 'linear', or 'cubic'. Default is 'nearest'. See scipy documentation for more information.
+        interpBounds: Optional[List[Tuple[float, float], Tuple[float, float]]]
+            X and Z bounds, respectively, to limit interpolation range. Defaults to [(-0.25 * survey length, 1.25 x survey length), (-(survey length/4), Max mesh Z-coordinate)].
+        
+        """
         if self.emi2mesh is None:
             return
         df = self.emi2mesh.copy()
 
-        #fill res0 data columns with arithmetic mean values if not mapped
         cols_to_exclude = set(self.keep_cols)
         data_cols = [c for c in df.columns if c not in cols_to_exclude]
 
-        if self.fillstrat == "mean":
+        if fillstrat == "mean":         # Fill res0 data columns with arithmetic mean
             for col in data_cols:
                 if pd.api.types.is_numeric_dtype(df[col]):
                     df[col] = df[col].fillna(df[col].mean())
-        elif self.fillstrat == "value":
-            df[data_cols] = df[data_cols].fillna(self.res0fill)
-        elif self.fillstrat == "none":
+        elif fillstrat == "value":         # Fill res0 data columns with user-defined value
+            df[data_cols] = df[data_cols].fillna(res0fill)
+        elif fillstrat == 'interp':         # Interpolate values in to fill in emires_col using scipy.griddata
+            from matplotlib import colors
+            
+            interpBounds = [(0 - (self.survLen*0.25), self.survLen*1.25), (-(self.survLen/4), self.emi2mesh['Z'].max())]
+            
+            if plotParams['vmin'] is None:
+                plotParams['vmin'] = ceil(df[self.emires_col].min())
+            if plotParams['vmax'] is None:
+                plotParams['vmax'] = floor(df[self.emires_col].max())
+            
+            grid_x = np.linspace(interpBounds[0][0], interpBounds[0][1], 1000)
+            grid_z = -np.geomspace(abs(interpBounds[1][1]), abs(interpBounds[1][0]), 200)
+            
+            Xgrid, Zgrid = np.meshgrid(grid_x, grid_z)
+            grid_values = griddata((df['X'], df['Z']), df[self.emires_col], (Xgrid, Zgrid), method=interpMeth)
+            gridValDf = pd.DataFrame(grid_values, index = grid_z, columns = grid_x)
+            
+            survNan = df.loc[(df['X'] >= grid_x[0]) & (df['X'] <= grid_x[-1]) & (df['Z'] <= grid_z[0]) & (df['Z'] >= grid_z[-1]) & (df[self.emires_col].isnull())]
+            
+            if check:
+                fig, ax = plt.subplots(layout='constrained')
+                
+                mesh = ax.pcolormesh(Xgrid, Zgrid, grid_values, norm=colors.LogNorm(vmin=plotParams['vmin'], vmax=plotParams['vmax']), cmap=plotParams['cmap'])
+                
+                cbar = plt.colorbar(mesh, ax=ax, location='bottom', shrink=0.75, aspect=25, extend='both')
+                cbar.set_label(self.emires_col)
+                cbTicks = np.geomspace(plotParams['vmin'], plotParams['vmax'], 5)
+                cbar.set_ticks(cbTicks)
+                cbLabels = [str(round(t, 2)) for t in cbTicks] # Format as strings
+                cbar.set_ticklabels(cbLabels)
+                cbar.ax.tick_params(which='minor', labelbottom=False) 
+
+                ax.set_title('Interpolated Mesh')
+                ax.set_xlabel('Length (m)')
+                ax.set_ylabel('Depth (m)')
+
+                plt.show()
+            
+            for index, row in survNan.iterrows():
+                xs = abs((grid_x - row['X']))
+                zs = abs((grid_z - row['Z']))
+                xi = np.where(xs == xs.min())[0][0]
+                zi = np.where(zs == zs.min())[0][0]
+                
+                df.loc[index, self.emires_col] = gridValDf.loc[grid_z[zi], grid_x[xi]]
+            
+            df[self.emires_col] = df[self.emires_col].fillna(df[self.emires_col].mean())
+            
+        elif fillstrat == "none":
             pass
         else:
             raise ValueError(f"Unknown fillstrat: {self.fillstrat}")
 
         self.emi2mesh = df
 
-    def _merge_into_mesh(self):
+    def merge_into_mesh(self):
         if self.emi2mesh is None:
             return
 
@@ -253,13 +317,13 @@ class em2er_map:
 
     def run(self) -> Dict[str, Any]:
         """
-        Execute the package and update k.mesh.df in place.
+        Execute the package and update k.mesh.df in place with default settings.
         """
-        self._prep_mesh_utm()
-        self._load_emi()
-        self._map_to_mesh()
-        self._fill_missing()
-        self._merge_into_mesh()
+        self.prep_mesh_utm()
+        self.load_emi()
+        self.map_to_mesh()
+        self.fill_missing()
+        self.merge_into_mesh()
 
         return {
             'utm_pair1': self.utm_pair1,
@@ -270,4 +334,5 @@ class em2er_map:
             'dist': self.dist
         }
 
-__all__ = ["local_grid_to_utm_along_line", "em2er_map"]
+
+__all__ = ["local_grid_to_utm_along_line", "direct_local_grid_to_utm_along_line", "em2er_map"]

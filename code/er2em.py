@@ -36,13 +36,25 @@ class DataMapper:
                     else:
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
 
-                                        
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
-                        if self.num_neighbors > 1:
-                            for dist in dists:
-                                distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dist})
+                        if self.num_neighbors != 1:
+                            remidxs = []
+                            if len(df) not in idxs:
+                                for j in range(len(idxs)):
+                                    if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[i, 'Z']) > self.max_distance_z:
+                                        remidxs.append(j)
+                            idxs = [val for k, val in enumerate(idxs) if k not in remidxs]
+                            dists = [val for l, val in enumerate(dists) if l not in remidxs]
+                            for m in range(len(idxs)):
+                                distance_data.append({'x': mesh_df.loc[idxs[m], 'x'],
+                                                      'y': mesh_df.loc[idxs[m], 'y'],
+                                                      'Z': mesh_df.loc[idxs[m], 'Z'],
+                                                      'distance': dists[m]})
                         else:
-                            distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dists})
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'Z': mesh_df.loc[i, 'Z'],
+                                                  'distance': dists})
 
                             
                 elif self.ckdMethod == 'dist':
@@ -50,6 +62,12 @@ class DataMapper:
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, maxDist, workers=self.njobs)
                     
                     for row_idx, idxs in enumerate(indices):
+                        remidxs = []
+                        if len(df) not in idxs:
+                            for j in range(len(idxs)):
+                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:
+                                    remidxs.append(j)
+                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
                                                   'y': mesh_df.loc[row_idx, 'y'],
@@ -69,16 +87,17 @@ class DataMapper:
                     
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, distThresh, workers=self.njobs)
                     
-                    # idxarr = np.array(idxs)
-                    # points = mesh_df[idxarr]
-
-                    
-                    
                     for row_idx, idxs in enumerate(indices):
+                        remidxs = []
+                        if len(df) not in idxs:
+                            for j in range(len(idxs)):
+                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:
+                                    remidxs.append(j)
+                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
                                                   'y': mesh_df.loc[row_idx, 'y'],
-                                                  'Z': mesh_df.loc[row_idx,'Z'],
+                                                  'Z': mesh_df.loc[row_idx, 'Z'],
                                                   'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
