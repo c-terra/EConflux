@@ -20,4 +20,4 @@ NOTE: The Jupyter Notebooks in the "examples" folder might require additional pa
 ## Overview of EConflux Classes and Structure
 
 
-<img width="6013" height="3930" alt="econflux_flowchart" src="https://github.com/user-attachments/assets/b823fac0-df70-4c78-a879-2aa42795af7b" />
+<img width="2411" height="1586" alt="image" src="https://github.com/user-attachments/assets/f195a182-4f42-4c46-a9ef-222875a13089" />
