@@ -11,7 +11,10 @@ The current version of EConflux is designed to be incorporated into workflows us
 Currently, it is recommended to install EConflux by cloning the repository and adding the path to the "code" folder to your system paths.
 
 ```
-git clone https://github.com/c-terra/EConflux <directory_name>  # Replace <directory_name> with path that you wish to clone EConflux to
+cd Documents   # navigate to a preferred directory: cd PreferredDirectory
+```
+```
+git clone https://github.com/c-terra/EConflux
 ```
 See the Jupyter Notebooks in the "examples" folder to see how the EConflux classes are called.
 
