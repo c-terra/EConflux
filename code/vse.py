@@ -75,9 +75,6 @@ class EConfluxStats:
         self.ticktypes = list(type(item) for item in ticks)
         
         # Set default font properties
-        
-        
-        
         fontkwDict = {'fontfamily': 'sans-serif',
                       'fontweight': 'bold',
                       'titlefontsize': 14,
@@ -98,22 +95,21 @@ class EConfluxStats:
         plt.rcParams['xtick.labelsize'] = fontkwDict['axisticksize']
         plt.rcParams['ytick.labelsize'] = fontkwDict['axisticksize']
 
-
+        # title font
         self.titleFontKws = {
             'fontsize': fontkwDict['titlefontsize'],
             'fontweight': fontkwDict['titlefontweight'],
             }
-        
+        # label font
         self.labelFontKws = {
             'fontsize': fontkwDict['axislabelsize'],
             'fontweight': fontkwDict['axislabelweight'],
             }
-
-
+        # colorbar title font
         self.cbarTitleKws = {
             'fontsize': fontkwDict['cbartitlesize'],
             'fontweight': fontkwDict['cbartitleweight']}
-
+        # colorbar tick font
         self.cbarTickKws = {
             'fontsize': fontkwDict['cbarticklabelsize'],
             }
@@ -151,17 +147,17 @@ class EConfluxStats:
             infSim, rawSim, obs = self.Y, self.y, self.X
         
         metrics = {
-            "KGE_np": [self.KGEnp(infSim, obs), self.KGEnp(rawSim, obs)],
-            "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],
-            "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],
-            "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],
-            "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],
-            "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],
-            "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],
-            "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],
-            "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],
-            "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)],
-            "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]
+            "KGE_np": [self.KGEnp(infSim, obs), self.KGEnp(rawSim, obs)],   # non-parametric Kling–Gupta Efficiency 
+            "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],   # 2009 Kling Gupta Efficiency
+            "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],   # 2012 Kling Gupta Efficiency
+            "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],   # Nash–Sutcliffe Efficiency
+            "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],   # Coefficient of determination
+            "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],   # Pearson's correlation coefficient
+            "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],   # Spearman's correlation coefficient
+            "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],   # Mean error
+            "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],   # Mean absolute error
+            "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)],   # Root mean square error
+            "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]   # Normalized root mean square error
         }
         if (self.informingMethod is not None) & (self.informedMethod is not None):
             return pd.DataFrame(metrics, index=[f"Informed ({self.informedMethod} vs {self.informingMethod})",
@@ -342,7 +338,12 @@ class EConfluxStats:
         plt.show()
         
     def qq_plot(self, sim, obs, xlabel='Dataset 1', ylabel='Dataset 2', title="QQ Plot", figname=None):
-        """Quantile-Quantile plot."""
+        """Quantile-Quantile plot.
+        Quantile–quantile (Q–Q) plots compare the distributions of two 
+        datasets by plotting their corresponding quantiles against each other. 
+        They show whether the datasets come from similar distributions and highlight 
+        deviations such as skewness, heavy tails, or outliers.
+        """
         d1, d2 = np.sort(sim[~np.isnan(sim)]), np.sort(obs[~np.isnan(obs)])
         q = np.linspace(0, 1, min(len(d1), len(d2)))
         q1, q2 = np.quantile(d1, q), np.quantile(d2, q)
@@ -371,6 +372,11 @@ class EConfluxStats:
         """
         Bland–Altman plot with 95% confidence limits.
         Returns summary statistics and shows plot.
+
+        NB: Bland–Altman plots assess agreement between two measurement 
+        methods by plotting their differences against their mean. They 
+        reveal systematic bias and the limits of agreement, showing whether 
+        the methods can be used interchangeably across the measurement range.
                 
         logList: A list where the first entry determines whether to use a log-scale for the x-axis (0 or False for linear, 1 or True for log)
                 and the second entry determines whether to use a log-scale for the y-axis. (e.g. [1, 0] means that the x-axis is a log-scale and the y-axis is linear)     
