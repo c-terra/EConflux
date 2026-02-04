@@ -20,9 +20,9 @@ plt.rcParams['font.family'] = 'arial'
 
 class EConfluxStats:
     """
-    EConflux Statistics and Visualization Class
-    For comparing ER and EM datasets (raw and informed),
-    generating diagnostic plots, and computing hydrological metrics.
+    EConflux Statistics and Visualization class for
+    comparing ER and EM datasets (raw and informed),
+    generating diagnostic plots, and computing statistical metrics.
     """
 
     def __init__(self, filepath, informingCol, rawCol, informedCol, drop_flag_col=None, 
@@ -36,10 +36,10 @@ class EConfluxStats:
         
         """
         
-        # Load dataset
+        # Loading dataset
         self.data = pd.read_csv(filepath)
 
-        # Drop flagged rows
+        # Dropping flagged rows
         self.data.sort_values(by=["Z", "x", "y"], inplace=True, ascending=False)
         if type(drop_flag_col) is list:
             self.data = self.data.dropna(subset=[informingCol, rawCol, informedCol], ignore_index=True)
@@ -56,12 +56,12 @@ class EConfluxStats:
         if drop_flag_col == 'nan':
             self.data = self.data.dropna(subset=[informingCol, rawCol, informedCol], ignore_index=True)
 
-        # Core variables
-        self.X = self.data[informingCol].loc[self.data[informingCol] > 0]  # Inversion Result from Informing Method
-        self.y = self.data[rawCol].loc[self.data[rawCol] > 0]        # Raw Inversion Result
-        self.Y = self.data[informedCol].loc[self.data[informedCol] > 0]    # Informed Inversion Result
+        # Defining core variables
+        self.X = self.data[informingCol].loc[self.data[informingCol] > 0]  # Inversion result from reference method
+        self.y = self.data[rawCol].loc[self.data[rawCol] > 0]        # Inversion result from raw uninformed data
+        self.Y = self.data[informedCol].loc[self.data[informedCol] > 0]    # Inversion result of informed data (incorporating the reference method)
 
-        # Log-transformed variables
+        # Defining log-transformed variables
         self.Xlog = np.log10(self.X)
         self.ylog = np.log10(self.y)
         self.Ylog = np.log10(self.Y)
@@ -74,7 +74,7 @@ class EConfluxStats:
         self.ticks = ticks
         self.ticktypes = list(type(item) for item in ticks)
         
-        # Set default font properties
+        # Setting default font properties
         fontkwDict = {'fontfamily': 'sans-serif',
                       'fontweight': 'bold',
                       'titlefontsize': 14,
@@ -121,7 +121,13 @@ class EConfluxStats:
 
     @staticmethod
     def KGEnp(sim, obs):
-        """Non-parametric Kling–Gupta Efficiency."""
+        """Non-parametric Kling–Gupta Efficiency.
+        The non-parametric Kling–Gupta efficiency (KGEnp) 
+        assesses model performance by comparing the rank structure, 
+        variability, and bias of simulated and observed data in a way 
+        that is robust to outliers and non-normal distributions.
+        """
+        
         sim, obs = np.asarray(sim, float), np.asarray(obs, float)
         # mask = np.isfinite(sim) & np.isfinite(obs)
         # sim, obs = sim[mask], obs[mask]
@@ -339,10 +345,10 @@ class EConfluxStats:
         
     def qq_plot(self, sim, obs, xlabel='Dataset 1', ylabel='Dataset 2', title="QQ Plot", figname=None):
         """Quantile-Quantile plot.
-        Quantile–quantile (Q–Q) plots compare the distributions of two 
-        datasets by plotting their corresponding quantiles against each other. 
-        They show whether the datasets come from similar distributions and highlight 
-        deviations such as skewness, heavy tails, or outliers.
+        Quantile–quantile (Q–Q) plots compare the distributions of 
+        two datasets by plotting their corresponding quantiles to 
+        reveal similarities and systematic deviations such as skewness, 
+        heavy tails, or outliers.
         """
         d1, d2 = np.sort(sim[~np.isnan(sim)]), np.sort(obs[~np.isnan(obs)])
         q = np.linspace(0, 1, min(len(d1), len(d2)))
@@ -373,10 +379,9 @@ class EConfluxStats:
         Bland–Altman plot with 95% confidence limits.
         Returns summary statistics and shows plot.
 
-        NB: Bland–Altman plots assess agreement between two measurement 
-        methods by plotting their differences against their mean. They 
-        reveal systematic bias and the limits of agreement, showing whether 
-        the methods can be used interchangeably across the measurement range.
+        Bland–Altman plots assess agreement between two measurement methods 
+        by examining differences versus their mean to reveal systematic bias and 
+        limits of agreement across the measurement range.
                 
         logList: A list where the first entry determines whether to use a log-scale for the x-axis (0 or False for linear, 1 or True for log)
                 and the second entry determines whether to use a log-scale for the y-axis. (e.g. [1, 0] means that the x-axis is a log-scale and the y-axis is linear)     
@@ -385,10 +390,10 @@ class EConfluxStats:
         diff = sim - obs
         mean = (sim + obs) / 2
 
-        sdev_diff = np.std(diff)
-        mean_diff = np.mean(diff)
-        UCL = mean_diff + (1.96 * sdev_diff)
-        LCL = mean_diff - (1.96 * sdev_diff)
+        sdev_diff = np.std(diff)   # defining the standard-deviation of the difference
+        mean_diff = np.mean(diff)   # defining the mean difference
+        UCL = mean_diff + (1.96 * sdev_diff)   # defining the upper confidence limit
+        LCL = mean_diff - (1.96 * sdev_diff)   # defining the lower confidence limit
 
         ratio_lower, ratio_upper = np.exp(LCL), np.exp(UCL)
         
