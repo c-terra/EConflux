@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Nov 11 16:14:07 2025
-
-@author: Chris
-"""
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -28,7 +21,7 @@ plt.rcParams['font.family'] = 'arial'
 class EConfluxStats:
     """
     EConflux Statistics and Visualization Class
-    For comparing ER vs EM datasets (raw and informed),
+    For comparing ER and EM datasets (raw and informed),
     generating diagnostic plots, and computing hydrological metrics.
     """
 
