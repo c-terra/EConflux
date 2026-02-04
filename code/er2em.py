@@ -128,6 +128,9 @@ class DataMapper:
         return result_df, distance_data
 
     def mapXY(self, mesh_df, dataframes, dfnames):
+        """
+        
+        """
         mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
         result_df = mesh_df.copy()
         distance_data = []
