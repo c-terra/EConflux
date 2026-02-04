@@ -10,8 +10,9 @@ The current version of EConflux is designed to be incorporated into workflows us
 
 Currently, it is recommended to install EConflux by cloning the repository and adding the path to the "code" folder to your system paths.
 
+# navigate to a preferred directory: cd PreferredDirectory
 ```
-cd Documents   # navigate to a preferred directory: cd PreferredDirectory
+cd Documents
 ```
 ```
 git clone https://github.com/c-terra/EConflux
