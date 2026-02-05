@@ -1,3 +1,4 @@
+#import libraries
 import os
 import sys
 import pandas as pd
@@ -7,33 +8,33 @@ from scipy.spatial import cKDTree
 from scipy.stats import gmean, hmean
 from scipy.interpolate import griddata
 
-
+#define DataMapper used for mapping ERI data to EMI data
 class DataMapper:
-    def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1):
-        self.num_neighbors = num_neighbors
-        self.max_distance_xy = max_distance_xy
-        self.max_distance_z = max_distance_z
-        self.ckdMethod = ckdMethod   # 'num' for original implementation, 'dist' to average all points within the max_distance, 'auto' to automatically determine the max_distance
+    def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1): #standard kwargs for the DataMapper class
+        self.num_neighbors = num_neighbors #number of neighbors spatially closest to the data
+        self.max_distance_xy = max_distance_xy #maximum distance to be examined on the x-y plane
+        self.max_distance_z = max_distance_z #maximum depth/elevation to be examined on the z axis
+        self.ckdMethod = ckdMethod   #'num' for original implementation, 'dist' to average all points within the max_distance, 'auto' to automatically determine the max_distance
         self.njobs = njobs
 
-    def mapXYZ(self, mesh_df, dataframes, dfnames):
-        mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z'])
-        result_df = mesh_df.copy()
-        distance_data = []
+    def mapXYZ(self, mesh_df, dataframes, dfnames): #define mesh dataframe with x, y, Z geometry for mapping NEED MORE HERE ON THIS SOMEONE
+        mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) #remove inf and/or NaN values from mesh
+        result_df = mesh_df.copy() #copy mesh geometry to save informed values on to
+        distance_data = [] #empty list for distances between data
         
-        maxDist = np.sqrt((self.max_distance_xy**2) + self.max_distance_z**2)
+        maxDist = np.sqrt((self.max_distance_xy**2) + self.max_distance_z**2) #define max search distance when mapping
         
         for idx, df in enumerate(dataframes):
-            df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z'])
-            if all(col in df.columns for col in ['x', 'y', 'Z']):
+            df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) #remove inf and/or NaN values from dataframe
+            if all(col in df.columns for col in ['x', 'y', 'Z']): #step to mapping with clean data
                 
-                tree = cKDTree(df[['x', 'y', 'Z']].values)
+                tree = cKDTree(df[['x', 'y', 'Z']].values) #map using cKDTree from scipy.spatial
                 
-                if self.ckdMethod == 'num':
-                    if self.num_neighbors > 1:
+                if self.ckdMethod == 'num': #determine if number of neighbors is defined
+                    if self.num_neighbors > 1: #if defined use number of neighbors to inform distances
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=maxDist, workers=self.njobs)
                         
-                    else:
+                    else: #if not defined use all data possible to inform distances
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
 
                                         
