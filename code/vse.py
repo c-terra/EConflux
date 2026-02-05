@@ -1,13 +1,3 @@
-"""
-Tools for comparing reference, raw, and informed EC datasets using
-diagnostic plots and performance metrics commonly used in hydrology
-and hydrogeophysics.
-
-Inputs are assumed to be positive-valued and may span multiple orders
-of magnitude.
-"""
-
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -29,16 +19,20 @@ plt.rcParams['font.size'] = 14
 plt.rcParams['font.family'] = 'arial'
 
 class EConfluxStats:
-    """
+    '''
     EConflux Statistics and Visualization class for
     comparing ER and EM datasets (raw and informed),
-    generating diagnostic plots, and computing statistical metrics.
-    """
+    generating diagnostic plots, and computing performance
+    metrics.
+
+    Inputs are assumed to be positive-valued and may span multiple orders
+    of magnitude.
+    '''
 
     def __init__(self, filepath, informingCol, rawCol, informedCol, drop_flag_col=None, 
                  informingMethod=None, informedMethod=None, units='mS/m', ticks=None, **fontkws):
         
-        """
+        '''
         Load ER and EM datasets, apply basic cleaning, and configure plotting defaults.
 
         Notes for users:
@@ -47,13 +41,11 @@ class EConfluxStats:
         * Values are filtered to be positive (i.e., > 0) to support log-based analyses.
         * Units are used for labeling only; no unit conversion is performed.
         
-        
         NB: fontkws: A dictionary to set font properties for all figures created. Possible options include:
             fontfamily, fontweight, titlesize, titleweight, axislabelsize, axislabelweight, axisticksize, cbartitlesize, cbartitleweight, cbarticklabelsize
             
             See https://matplotlib.org/stable/api/font_manager_api.html#matplotlib.font_manager.FontProperties for font property options
-        
-        """
+        '''
         
         # Loading dataset
         self.data = pd.read_csv(filepath)
@@ -119,7 +111,7 @@ class EConfluxStats:
             'fontsize': fontkwDict['titlefontsize'],
             'fontweight': fontkwDict['titlefontweight'],
             }
-        # label font
+        # axis label font
         self.labelFontKws = {
             'fontsize': fontkwDict['axislabelsize'],
             'fontweight': fontkwDict['axislabelweight'],
@@ -140,12 +132,17 @@ class EConfluxStats:
 
     @staticmethod
     def KGEnp(sim, obs):
-        """Non-parametric Kling–Gupta Efficiency (Pool et al., 2018).
-        The non-parametric Kling–Gupta efficiency (KGEnp) 
-        assesses model performance by comparing the rank structure, 
-        variability, and bias of simulated and observed data in a way 
-        that is robust to outliers and non-normal distributions.
-        """
+        '''
+        Non-parametric Kling–Gupta Efficiency, KGEnp (Pool et al., 2018).
+
+        Evaluates model performance using:
+        * rank structure (Spearman correlation),
+        * relative variability (distribution shape),
+        * mean bias.
+
+        Designed to be robust to outliers and non-normal data,
+        which are common in environmental time series.
+        '''
         
         sim, obs = np.asarray(sim, float), np.asarray(obs, float)
         # mask = np.isfinite(sim) & np.isfinite(obs)
@@ -164,7 +161,12 @@ class EConfluxStats:
         return 1 - np.sqrt((alpha - 1) ** 2 + (beta - 1) ** 2 + (r - 1) ** 2)
 
     def metrics(self, logOrlin='log'):
-        """Return dataframe of evaluation metrics for raw and informed datasets."""
+        '''
+        Return dataframe of evaluation metrics for raw and informed datasets
+        
+        If logOrlin='log', all metrics are computed in log10 space,
+        which emphasizes relative (multiplicative) differences.
+        '''
         
         if logOrlin == 'log':
             infSim, rawSim, obs = self.Ylog, self.ylog, self.Xlog
@@ -177,7 +179,7 @@ class EConfluxStats:
             "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],   # Kling–Gupta Efficiency (Kling et al., 2012)
             "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],   # Nash–Sutcliffe Efficiency
             "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],   # Coefficient of determination
-            "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],   # Pearson's correlation coefficient
+            "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],   # Pearson correlation coefficient
             "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],   # Spearman's correlation coefficient
             "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],   # Mean error
             "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],   # Mean absolute error
@@ -368,12 +370,12 @@ class EConfluxStats:
         plt.show()
         
     def qq_plot(self, sim, obs, xlabel='Dataset 1', ylabel='Dataset 2', title="QQ Plot", figname=None):
-        """
+        '''
         Quantile-quantile plot (Q-Q) for comparing distributions.
 
         This diagnostic tool compares distributional similarity rather than pointwise
         agreement; deviations from the 1:1 line indicate skewness, tail differences, or outliers.
-        """
+        '''
         d1, d2 = np.sort(sim[~np.isnan(sim)]), np.sort(obs[~np.isnan(obs)])
         q = np.linspace(0, 1, min(len(d1), len(d2)))
         q1, q2 = np.quantile(d1, q), np.quantile(d2, q)
@@ -410,12 +412,14 @@ class EConfluxStats:
                 
         '''
         diff = sim - obs
-        mean = (sim + obs) / 2
+        mean = (sim + obs) / 2   # Mean difference represents bias
 
         sdev_diff = np.std(diff)   # defining the standard-deviation of the difference
         mean_diff = np.mean(diff)   # defining the mean difference
-        UCL = mean_diff + (1.96 * sdev_diff)   # defining the upper confidence limit
-        LCL = mean_diff - (1.96 * sdev_diff)   # defining the lower confidence limit
+
+        # ±1.96σ defines the 95% limits of agreement
+        UCL = mean_diff + (1.96 * sdev_diff)   # the upper confidence limit of agreement
+        LCL = mean_diff - (1.96 * sdev_diff)   # the lower confidence limit of agreement
 
         ratio_lower, ratio_upper = np.exp(LCL), np.exp(UCL)
         
