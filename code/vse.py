@@ -1,3 +1,13 @@
+"""
+Tools for comparing reference, raw, and informed EC datasets using
+diagnostic plots and performance metrics commonly used in hydrology
+and hydrogeophysics.
+
+Inputs are assumed to be positive-valued and may span multiple orders
+of magnitude.
+"""
+
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -29,7 +39,16 @@ class EConfluxStats:
                  informingMethod=None, informedMethod=None, units='mS/m', ticks=None, **fontkws):
         
         """
-        **fontkws: A dictionary to set font properties for all figures created. Possible options include:
+        Load ER and EM datasets, apply basic cleaning, and configure plotting defaults.
+
+        Notes for users:
+        * NaNs are always dropped from the three core columns (informingCol, rawCol, informedCol).
+        * Optional flag columns can be used to exclude rows.
+        * Values are filtered to be positive (i.e., > 0) to support log-based analyses.
+        * Units are used for labeling only; no unit conversion is performed.
+        
+        
+        NB: fontkws: A dictionary to set font properties for all figures created. Possible options include:
             fontfamily, fontweight, titlesize, titleweight, axislabelsize, axislabelweight, axisticksize, cbartitlesize, cbartitleweight, cbarticklabelsize
             
             See https://matplotlib.org/stable/api/font_manager_api.html#matplotlib.font_manager.FontProperties for font property options
@@ -121,7 +140,7 @@ class EConfluxStats:
 
     @staticmethod
     def KGEnp(sim, obs):
-        """Non-parametric Kling–Gupta Efficiency.
+        """Non-parametric Kling–Gupta Efficiency (Pool et al., 2018).
         The non-parametric Kling–Gupta efficiency (KGEnp) 
         assesses model performance by comparing the rank structure, 
         variability, and bias of simulated and observed data in a way 
@@ -153,9 +172,9 @@ class EConfluxStats:
             infSim, rawSim, obs = self.Y, self.y, self.X
         
         metrics = {
-            "KGE_np": [self.KGEnp(infSim, obs), self.KGEnp(rawSim, obs)],   # non-parametric Kling–Gupta Efficiency 
-            "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],   # 2009 Kling Gupta Efficiency
-            "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],   # 2012 Kling Gupta Efficiency
+            "KGE_np": [self.KGEnp(infSim, obs), self.KGEnp(rawSim, obs)],   # non-parametric Kling–Gupta Efficiency (Pool et al., 2018)
+            "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],   # Kling–Gupta Efficiency (Gupta et al., 2009)
+            "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],   # Kling–Gupta Efficiency (Kling et al., 2012)
             "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],   # Nash–Sutcliffe Efficiency
             "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],   # Coefficient of determination
             "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],   # Pearson's correlation coefficient
@@ -281,7 +300,12 @@ class EConfluxStats:
         }
 
     def kde_histograms(self, nbins=100, figname=None):
-        """Kernel density and histogram plots with metrics annotated."""
+       '''
+       Compare EC distributions using log-spaced histograms.
+
+       Plots show how raw and informed datasets differ from the reference with 
+       respect to distribution shape, with annotations of summary error metrics.
+       ''' 
         fig, ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
 
         # Raw
@@ -344,11 +368,11 @@ class EConfluxStats:
         plt.show()
         
     def qq_plot(self, sim, obs, xlabel='Dataset 1', ylabel='Dataset 2', title="QQ Plot", figname=None):
-        """Quantile-Quantile plot.
-        Quantile–quantile (Q–Q) plots compare the distributions of 
-        two datasets by plotting their corresponding quantiles to 
-        reveal similarities and systematic deviations such as skewness, 
-        heavy tails, or outliers.
+        """
+        Quantile-quantile plot (Q-Q) for comparing distributions.
+
+        This diagnostic tool compares distributional similarity rather than pointwise
+        agreement; deviations from the 1:1 line indicate skewness, tail differences, or outliers.
         """
         d1, d2 = np.sort(sim[~np.isnan(sim)]), np.sort(obs[~np.isnan(obs)])
         q = np.linspace(0, 1, min(len(d1), len(d2)))
@@ -375,18 +399,16 @@ class EConfluxStats:
                      title=None, ax=None, ymin=None, ymax=None, xmin=None, xmax=None, figname=None, 
                      cbar=False, dcolor=False, dcmap='cividis', dbnds=None, xticks=None, logList=None, legendParams={'plot': True, 'loc': 'best'},
                      savefig=True):
-        """
+        '''
         Bland–Altman plot with 95% confidence limits.
-        Returns summary statistics and shows plot.
-
-        Bland–Altman plots assess agreement between two measurement methods 
-        by examining differences versus their mean to reveal systematic bias and 
-        limits of agreement across the measurement range.
+        Plots the difference (sim - obs) versus their mean to assess systematic
+        bias and limits of agreement across the measurement range.
+        Returns the plot and shows summary statistics.
                 
         logList: A list where the first entry determines whether to use a log-scale for the x-axis (0 or False for linear, 1 or True for log)
                 and the second entry determines whether to use a log-scale for the y-axis. (e.g. [1, 0] means that the x-axis is a log-scale and the y-axis is linear)     
                 
-        """
+        '''
         diff = sim - obs
         mean = (sim + obs) / 2
 
