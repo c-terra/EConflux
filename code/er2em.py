@@ -12,6 +12,11 @@ from scipy.interpolate import griddata
 class DataMapper:
     '''
         Initializes the mapper with spatial search constraints.
+
+        NB: Column headers require the following format, horizontal co-planar (HCP) or perpendicular (PRP), followed by the coil spacing (i.e., 1.0 or 1.1)
+                [['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']]
+                [['HCP2.0', 'HCP2.0_inph', 'PRP2.1', 'PRP2.1_inph']] 
+                [['HCP4.0', 'HCP4.0_inph', 'PRP4.1', 'PRP4.1_inph']] 
         
         Parameters:
         - num_neighbors: Number of nearby points to consider for averaging.
