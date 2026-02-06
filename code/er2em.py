@@ -1,4 +1,4 @@
-#import libraries
+# import libraries
 import os
 import sys
 import pandas as pd
@@ -8,44 +8,55 @@ from scipy.spatial import cKDTree
 from scipy.stats import gmean, hmean
 from scipy.interpolate import griddata
 
-#define DataMapper used for mapping ERI data to EMI data
+# define DataMapper used for mapping ERI data to EMI data
 class DataMapper:
-    def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1): #standard kwargs for the DataMapper class
-        self.num_neighbors = num_neighbors #number of neighbors spatially closest to the data
-        self.max_distance_xy = max_distance_xy #maximum distance to be examined on the x-y plane
-        self.max_distance_z = max_distance_z #maximum depth/elevation to be examined on the z axis
-        self.ckdMethod = ckdMethod   #'num' for original implementation, 'dist' to average all points within the max_distance, 'auto' to automatically determine the max_distance
-        self.njobs = njobs
-
-    def mapXYZ(self, mesh_df, dataframes, dfnames): #define mesh dataframe with x, y, Z geometry for mapping NEED MORE HERE ON THIS SOMEONE
-        mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) #remove inf and/or NaN values from mesh
-        result_df = mesh_df.copy() #copy mesh geometry to save informed values on to
-        distance_data = [] #empty list for distances between data
+    '''
+        Initializes the mapper with spatial search constraints.
         
-        maxDist = np.sqrt((self.max_distance_xy**2) + self.max_distance_z**2) #define max search distance when mapping
+        Parameters:
+        - num_neighbors: Number of nearby points to consider for averaging.
+        - max_distance_xy: Horizontal search radius (meters).
+        - max_distance_z: Vertical search radius (meters).
+        - ckdMethod: 'num' (fixed neighbors), 'dist' (radius-based), or 'auto' (dynamic threshold).
+    '''
+    def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1): # standard kwargs for the DataMapper class
+        self.num_neighbors = num_neighbors # number of neighbors spatially closest to the data
+        self.max_distance_xy = max_distance_xy # maximum distance to be examined on the x-y plane
+        self.max_distance_z = max_distance_z # maximum depth/elevation to be examined on the z axis
+        self.ckdMethod = ckdMethod   # 'num' for original implementation, 'dist' to average all points within the max_distance, 'auto' to automatically determine the max_distance
+        self.njobs = njobs
+    
+    # defining mesh dataframe with x, y, Z geometry for mapping, collocation, and binning of data
+    def mapXYZ(self, mesh_df, dataframes, dfnames): 
+        mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) # remove inf and/or NaN values from mesh
+        result_df = mesh_df.copy() # copy mesh geometry to save informed values on to
+        distance_data = [] # empty list for distances between data
+        
+        maxDist = np.sqrt((self.max_distance_xy**2) + self.max_distance_z**2) # define max search distance when mapping
         
         for idx, df in enumerate(dataframes):
-            df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) #remove inf and/or NaN values from dataframe
-            if all(col in df.columns for col in ['x', 'y', 'Z']): #step to mapping with clean data
+            df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) # remove inf and/or NaN values from dataframe
+            if all(col in df.columns for col in ['x', 'y', 'Z']): # step to mapping with clean data
                 
-                tree = cKDTree(df[['x', 'y', 'Z']].values) #map using cKDTree from scipy.spatial
-                
-                if self.ckdMethod == 'num': #determine if number of neighbors is defined
-                    if self.num_neighbors > 1: #if defined use number of neighbors to inform distances
+                tree = cKDTree(df[['x', 'y', 'Z']].values) # map using cKDTree from scipy.spatial
+
+                #Query by specific number of neighbors ('num')
+                if self.ckdMethod == 'num': # determine if number of neighbors is defined
+                    if self.num_neighbors > 1: # if defined use number of neighbors to inform distances
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=maxDist, workers=self.njobs)
                         
-                    else: #if not defined use all data possible to inform distances
+                    else: # if not defined use all data possible to inform distances
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
 
                                         
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
-                        if self.num_neighbors > 1:
+                        if self.num_neighbors > 1:   # if defined use number of neighbors to append distances
                             for dist in dists:
                                 distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dist})
-                        else:
+                        else:   # if not defined use all data possible to append distances
                             distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dists})
 
-                            
+                # Query all points within a fixed distance ('dist')            
                 elif self.ckdMethod == 'dist':
                     
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, maxDist, workers=self.njobs)
@@ -59,14 +70,14 @@ class DataMapper:
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )})
-                    
+                # Automatically determine a threshold based on nearest-neighbor density ('auto')    
                 elif self.ckdMethod == 'auto':
                     
                     distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
                     minDist = []
                     for dists in distances:
                         minDist.append(min(dists))
-                    distThresh = max(minDist)
+                    distThresh = max(minDist) # Set threshold to cover all points
                     
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, distThresh, workers=self.njobs)
                     
@@ -84,7 +95,7 @@ class DataMapper:
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )})
-                
+                # Statistical aggregation (Averages neighbors found above)
                 if self.num_neighbors > 1:
                 
                     for col in df.columns:
@@ -92,6 +103,7 @@ class DataMapper:
                             arithmetic_means, geometric_means, harmonic_means = [], [], []
                                 
                             for row in indices:
+                                # Ensure we don't include out-of-bounds indices from cKDTree
                                 if len(df) not in row:
                                     valid_values = df.loc[row, col].values
                                 else:
@@ -99,6 +111,7 @@ class DataMapper:
         
                                 if len(valid_values) > 0:
                                     arithmetic_means.append(valid_values.mean())
+                                    # Geometric/Harmonic means require positive values
                                     geometric_means.append(gmean(valid_values) if np.all(valid_values > 0) else np.nan)
                                     harmonic_means.append(hmean(valid_values) if np.all(valid_values > 0) else np.nan)
                                 else:
@@ -115,7 +128,7 @@ class DataMapper:
                                 result_df[f'{dfnames[idx]}_{col}_harm'] = harmonic_means
         
                 else:
-                
+                    # Simple 1-to-1 nearest value mapping
                     for col in df.columns:
                         if col not in ['x', 'y', 'Z']:
                             nearest_value = []
@@ -129,9 +142,10 @@ class DataMapper:
         return result_df, distance_data
 
     def mapXY(self, mesh_df, dataframes, dfnames):
-        """
-        
-        """
+        '''
+        Maps dataframes onto a 2D mesh (X, Y).
+        Similar to mapXYZ but ignores the vertical (Z) dimension.
+        '''
         mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
         result_df = mesh_df.copy()
         distance_data = []
@@ -245,6 +259,9 @@ class DataMapper:
         return result_df, distance_data
     
     def mapXY_test(self, mesh_df, dataframes, dfnames):
+        '''
+        Experimental high-speed 2D mapping method utilizing vectorization for distance tracking.
+        '''
         mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
         result_df = mesh_df.copy()
         mesh_points = mesh_df[['x', 'y']].values
@@ -303,6 +320,10 @@ class DataMapper:
 
     
     def create_mean_dfs(self, df):
+        '''
+        Splits a multi-stat dataframe into three distinct dataframes for 
+        Arithmetic, Geometric, and Harmonic averages respectively.
+        '''
         arth_columns = [col for col in df.columns if '_arith' in col]
         geom_columns = [col for col in df.columns if '_geom' in col]
         harm_columns = [col for col in df.columns if '_harm' in col]
@@ -315,6 +336,10 @@ class DataMapper:
         return df_arth, df_geom, df_harm
 
     def plot_distance_histogram(self, distance_data, xyAnn = (0.7,0.8)):
+        '''
+        Generates a histogram of the spatial displacement between the mesh and raw data.
+        Provides Mean Squared Error (MSE) and standard deviation stats.
+        '''
         distM = pd.DataFrame(distance_data)
         
         mse = np.sqrt(np.mean(distM['distance']**2))
@@ -335,6 +360,10 @@ class DataMapper:
         plt.show()
 
     def filter_and_rename(self, eca_arth, minCut=5, maxCut=5, MaxECa=50, minECa=0, keepInphase=False):
+        '''
+        Filters out outliers and crops the horizontal extent of the ECa data.
+        Standardizes column names for specific sensor configurations (HCP/PRP).
+        '''
         # Compute xMin and xMax for the 'X' column specifically
         xMin = eca_arth['X'].min() + minCut
         xMax = eca_arth['X'].max() - maxCut
@@ -403,10 +432,12 @@ class DataMapper:
     def process_and_bin_data(self, eca_df, final_df, path, filename_ec, filename_eca,
                              nbins=300, xDis=0.5, zLayers=20, interpMethod='nearest',
                              useGeomspace=True):
-
-        import numpy as np
-        import pandas as pd
-    
+        '''
+        Creates a structured 2D grid from unorganized survey data. 
+        - Crops EC data to ECa bounds.
+        - Interpolates conductivity onto a mesh.
+        - Bins the results horizontally (X) for final profile generation.
+        '''
         # Extract values from eca_df and final_df
         eca = eca_df.values
         ec = np.array(final_df[['X', 'Z', 'Conductivity(mS/m)']])
