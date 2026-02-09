@@ -34,13 +34,16 @@ class DataMapper:
         self.njobs = njobs
     
     # defining mesh dataframe with x, y, Z geometry for mapping, collocation, and binning of data
-    def mapXYZ(self, mesh_df, dataframes, dfnames): 
+    def mapXYZ(self, mesh_df, dataframes, dfnames):
+        # Clean the target mesh data by removing infinite/NaN values and ensuring coordinates exist
         mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) # remove inf and/or NaN values from mesh
         result_df = mesh_df.copy() # copy mesh geometry to save informed values on to
         distance_data = [] # empty list for distances between data
-        
+
+        # Calculate the 3D Euclidean distance limit (hypotenuse of XY and Z limits)
         maxDist = np.sqrt((self.max_distance_xy**2) + self.max_distance_z**2) # define max search distance when mapping
-        
+
+        # Iterate through each source dataframe (e.g., different sensor datasets)
         for idx, df in enumerate(dataframes):
             df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) # remove inf and/or NaN values from dataframe
             if all(col in df.columns for col in ['x', 'y', 'Z']): # step to mapping with clean data
@@ -53,6 +56,7 @@ class DataMapper:
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=maxDist, workers=self.njobs)
                         
                     else: # if not defined use all data possible to inform distances
+                        # Find the single nearest Neighbor (k=1) 
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
 
                                         
@@ -65,9 +69,11 @@ class DataMapper:
 
                 # Query all points within a fixed distance ('dist')            
                 elif self.ckdMethod == 'dist':
-                    
+                   
+                    # Returns a list of indices for ALL points within the radius (variable number of neighbors per point)
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, maxDist, workers=self.njobs)
-                    
+
+                    # Calculate distances manually since query_ball_point only returns indices
                     for row_idx, idxs in enumerate(indices):
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
@@ -79,13 +85,15 @@ class DataMapper:
                                                                       )})
                 # Automatically determine a threshold based on nearest-neighbor density ('auto')    
                 elif self.ckdMethod == 'auto':
-                    
+
+                    # First, query k-neighbors to find how far apart points typically are
                     distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
                     minDist = []
                     for dists in distances:
                         minDist.append(min(dists))
                     distThresh = max(minDist) # Set threshold to cover all points
-                    
+
+                    # Re-query using the calculated dynamic threshold
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, distThresh, workers=self.njobs)
                     
                     # idxarr = np.array(idxs)
@@ -102,7 +110,8 @@ class DataMapper:
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )})
-                # Statistical aggregation (Averages neighbors found above)
+                # Statistical aggregation
+               # Calculate means (Arithmetic, Geometric, Harmonic) based on the neighbors found above
                 if self.num_neighbors > 1:
                 
                     for col in df.columns:
@@ -122,11 +131,14 @@ class DataMapper:
                                     geometric_means.append(gmean(valid_values) if np.all(valid_values > 0) else np.nan)
                                     harmonic_means.append(hmean(valid_values) if np.all(valid_values > 0) else np.nan)
                                 else:
+                                    # If no neighbors found, append NaN
                                     arithmetic_means.append(np.nan)
                                     geometric_means.append(np.nan)
                                     harmonic_means.append(np.nan)  
-                        
+
+                            # Store results in the result dataframe
                             result_df[f'{dfnames[idx]}_{col}_arith'] = arithmetic_means
+                            # 'inph' (In-phase) data can be negative, so we skip Geom/Harm means for it
                             if 'inph' in col:
                                 result_df[f'{dfnames[idx]}_{col}_geom'] = arithmetic_means
                                 result_df[f'{dfnames[idx]}_{col}_harm'] = arithmetic_means
@@ -135,7 +147,7 @@ class DataMapper:
                                 result_df[f'{dfnames[idx]}_{col}_harm'] = harmonic_means
         
                 else:
-                    # Simple 1-to-1 nearest value mapping
+                    # Simple 1-to-1 nearest value mapping (no averaging needed) 
                     for col in df.columns:
                         if col not in ['x', 'y', 'Z']:
                             nearest_value = []
@@ -160,7 +172,8 @@ class DataMapper:
         for idx, df in enumerate(dataframes):
             df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
             if all(col in df.columns for col in ['x', 'y']):
-                
+
+                # KDTree built on X and Y only 
                 tree = cKDTree(df[['x', 'y']].values)
                 
                 if self.ckdMethod == 'num':
@@ -210,7 +223,8 @@ class DataMapper:
                                                   'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2)
                                                                       )})
-                
+
+                # Statistical Aggregation (2D) 
                 if self.num_neighbors > 1:
                 
                     for col in df.columns:
@@ -231,7 +245,8 @@ class DataMapper:
                                     arithmetic_means.append(np.nan)
                                     geometric_means.append(np.nan)
                                     harmonic_means.append(np.nan)  
-                        
+
+                            # Handle cases where dfname is empty 
                             if dfnames[idx] == '':
                                 result_df[f'{col}_arith'] = arithmetic_means
                                 if 'inph' in col:
@@ -281,14 +296,16 @@ class DataMapper:
     
             df_points = df[['x', 'y']].values
             tree = cKDTree(df_points)
-    
+
+            # Vectorized query: Find neighbors for ALL mesh points at once
             distances, indices = tree.query(mesh_points, k=self.num_neighbors)
             
             # Ensure 2D shape for single neighbor case
             if self.num_neighbors == 1:
                 distances = distances[:, np.newaxis]
                 indices = indices[:, np.newaxis]
-            
+
+            # create boolean mask for valid neighbors 
             within_max_distance = distances <= self.max_distance_xy
             
             # Track distances
@@ -334,8 +351,10 @@ class DataMapper:
         arth_columns = [col for col in df.columns if '_arith' in col]
         geom_columns = [col for col in df.columns if '_geom' in col]
         harm_columns = [col for col in df.columns if '_harm' in col]
+        # Identify columns that are NOT statistical 
         other_columns = [col for col in df.columns if col not in arth_columns + geom_columns + harm_columns]
-        
+
+        # Create new DataFrames and strip suffic from column names
         df_arth = df[other_columns + arth_columns].rename(columns={col: col.replace('_arith', '') for col in arth_columns})
         df_geom = df[other_columns + geom_columns].rename(columns={col: col.replace('_geom', '') for col in geom_columns})
         df_harm = df[other_columns + harm_columns].rename(columns={col: col.replace('_harm', '') for col in harm_columns})
@@ -479,9 +498,12 @@ class DataMapper:
             zi = -np.geomspace(abs(z_min), abs(z_max), zLayers)
         else:
             zi = np.linspace(z_min, z_max, zLayers)
-    
+
+        # Perform 2D grid interpolation                         
         xi, zi = np.meshgrid(xi, zi)
         condi = griddata((x, z), cond, (xi, zi), method=interpMethod)
+                                 
+       #Flatten Results back into coordinate list
         x = np.unique(xi)
         z = np.unique(zi)
         condxz = np.array(np.meshgrid(x, z)).T.reshape(-1, 2)
@@ -491,14 +513,16 @@ class DataMapper:
         ec = np.round(ec, 2)
         print('After meshing length ECa', len(eca))
         print('After meshing length EC', len(ec))
-    
+
+        # Binning the Inverted Conductivity (EC)                          
         midDepths = -np.unique(ec[:, 1])
         bins = np.round(np.linspace(minX, maxX, nbins + 1), 1)
         binID = np.digitize(ec[:, 0], bins)
     
         ertEC = np.empty((nbins, len(midDepths)))
         midDepthsr = midDepths[::-1]
-    
+
+        # iterate bins and depths to calculate average conductivity per cell                          
         for i in range(nbins):
             for j in range(len(midDepths)):
                 idepth = np.isclose(ec[:, 1], -midDepthsr[j], atol=1e-3)
@@ -519,11 +543,13 @@ class DataMapper:
     
         headers = eca_df.columns[1:].tolist()
         df_eca = pd.DataFrame(np.round(eca2, 1), columns=headers)
-    
+
+        # Drop Empty Bins                         
         rows_to_drop = df_eca.eq(0).any(axis=1)
         df_eca = df_eca[~rows_to_drop].reset_index(drop=True)
         df_ec = df_ec[~rows_to_drop].reset_index(drop=True)
-    
+
+        # Export Processed Data                         
         df_ec.to_csv(os.path.join(path, filename_ec), index=False)
         df_eca.to_csv(os.path.join(path, filename_eca), index=False)
     
