@@ -62,7 +62,7 @@ class DataMapper:
                                         
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
                         if self.num_neighbors > 1:   # if defined use number of neighbors to append distances
-                            for dist in dists:
+                            for dist in dists: # define updates to the x,y,z positions based on the number of neighbors used to append distances
                                 distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dist})
                         else:   # if not defined use all data possible to append distances
                             distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dists})
@@ -100,7 +100,7 @@ class DataMapper:
                     # points = mesh_df[idxarr]
 
                     
-                    
+                    # update indexes based on distance appendix
                     for row_idx, idxs in enumerate(indices):
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
@@ -109,56 +109,56 @@ class DataMapper:
                                                   'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
-                                                                      )})
+                                                                      )}) # define distance as the hypotenuse between points
                 # Statistical aggregation
                # Calculate means (Arithmetic, Geometric, Harmonic) based on the neighbors found above
-                if self.num_neighbors > 1:
+                if self.num_neighbors > 1: # apply different mean calcuations if number of neighbors is called
                 
                     for col in df.columns:
                         if col not in ['x', 'y', 'Z']:
-                            arithmetic_means, geometric_means, harmonic_means = [], [], []
+                            arithmetic_means, geometric_means, harmonic_means = [], [], [] # empty arrays for the arithmetic, geometric, and harmonic means
                                 
                             for row in indices:
                                 # Ensure we don't include out-of-bounds indices from cKDTree
                                 if len(df) not in row:
-                                    valid_values = df.loc[row, col].values
+                                    valid_values = df.loc[row, col].values # define values within bounds for means
                                 else:
-                                    valid_values = []
+                                    valid_values = [] # if no values, not valid, empty array
         
-                                if len(valid_values) > 0:
-                                    arithmetic_means.append(valid_values.mean())
+                                if len(valid_values) > 0: # calculate means where possible based on the distance away and number of neighbors
+                                    arithmetic_means.append(valid_values.mean()) #arithmetic mean for valid values
                                     # Geometric/Harmonic means require positive values
-                                    geometric_means.append(gmean(valid_values) if np.all(valid_values > 0) else np.nan)
-                                    harmonic_means.append(hmean(valid_values) if np.all(valid_values > 0) else np.nan)
+                                    geometric_means.append(gmean(valid_values) if np.all(valid_values > 0) else np.nan) # geometric mean for valid values
+                                    harmonic_means.append(hmean(valid_values) if np.all(valid_values > 0) else np.nan) # harmonic mean for valid values
                                 else:
                                     # If no neighbors found, append NaN
-                                    arithmetic_means.append(np.nan)
-                                    geometric_means.append(np.nan)
-                                    harmonic_means.append(np.nan)  
+                                    arithmetic_means.append(np.nan) # if not valid, NaN arithmetic mean
+                                    geometric_means.append(np.nan) # if not valid, NaN geometric mean
+                                    harmonic_means.append(np.nan)  # if not valid, NaN harmonic mean
 
                             # Store results in the result dataframe
-                            result_df[f'{dfnames[idx]}_{col}_arith'] = arithmetic_means
+                            result_df[f'{dfnames[idx]}_{col}_arith'] = arithmetic_means # append arithmetic means to results df
                             # 'inph' (In-phase) data can be negative, so we skip Geom/Harm means for it
                             if 'inph' in col:
-                                result_df[f'{dfnames[idx]}_{col}_geom'] = arithmetic_means
+                                result_df[f'{dfnames[idx]}_{col}_geom'] = arithmetic_means # append in-phase arithmetic means only
                                 result_df[f'{dfnames[idx]}_{col}_harm'] = arithmetic_means
                             else:
-                                result_df[f'{dfnames[idx]}_{col}_geom'] = geometric_means
-                                result_df[f'{dfnames[idx]}_{col}_harm'] = harmonic_means
+                                result_df[f'{dfnames[idx]}_{col}_geom'] = geometric_means # append geometric means to results df
+                                result_df[f'{dfnames[idx]}_{col}_harm'] = harmonic_means # append harmonic means to results df
         
                 else:
                     # Simple 1-to-1 nearest value mapping (no averaging needed) 
                     for col in df.columns:
                         if col not in ['x', 'y', 'Z']:
-                            nearest_value = []
+                            nearest_value = [] # when no number of neighbors defined, just map to closest point
                             
                             for i in indices:
-                                nearest_value.append(df.loc[i, col])
+                                nearest_value.append(df.loc[i, col]) # define nearest values when number of neighbors not defined
                                 
-                            result_df[f'{dfnames[idx]}_{col}'] = nearest_value
+                            result_df[f'{dfnames[idx]}_{col}'] = nearest_value # append nearest values when number of neighbors not defined
 
 
-        return result_df, distance_data
+        return result_df, distance_data # call complete results df and distance data
 
     def mapXY(self, mesh_df, dataframes, dfnames):
         '''
