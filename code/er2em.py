@@ -26,6 +26,10 @@ class DataMapper:
         - max_distance_z: Vertical search radius (meters).
         - ckdMethod: 'num' (fixed neighbors), 'dist' (radius-based), or 'auto' (dynamic threshold).
     '''
+        """collocate one or more source datasets (dataframes)
+           onto a target mesh (mesh_df) using nearest neighbors / radius search, and optionally compute
+           arithmetic/geometric/harmonic averages + distance diagnostics"""
+
     def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1): # standard kwargs for the DataMapper class
         self.num_neighbors = num_neighbors # number of neighbors spatially closest to the data
         self.max_distance_xy = max_distance_xy # maximum distance to be examined on the x-y plane
@@ -40,6 +44,7 @@ class DataMapper:
         result_df = mesh_df.copy() # copy mesh geometry to save informed values on to
         distance_data = [] # empty list for distances between data
 
+        # Using a single 3D search radius combining horizontal and vertical tolerances
         # Calculate the 3D Euclidean distance limit (hypotenuse of XY and Z limits)
         maxDist = np.sqrt((self.max_distance_xy**2) + self.max_distance_z**2) # define max search distance when mapping
 
@@ -48,9 +53,13 @@ class DataMapper:
             df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) # remove inf and/or NaN values from dataframe
             if all(col in df.columns for col in ['x', 'y', 'Z']): # step to mapping with clean data
                 
-                tree = cKDTree(df[['x', 'y', 'Z']].values) # map using cKDTree from scipy.spatial
+                tree = cKDTree(df[['x', 'y', 'Z']].values) # map using cKDTree from scipy.spatial 
 
                 #Query by specific number of neighbors ('num')
+
+                """With distance_upper_bound, cKDTree uses a sentinel for "no neighbor
+                   distance = inf and index = len(df). Downstream logic must ignore those invalid neighbors"""
+                
                 if self.ckdMethod == 'num': # determine if number of neighbors is defined
                     if self.num_neighbors > 1: # if defined use number of neighbors to inform distances
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=maxDist, workers=self.njobs)
@@ -59,7 +68,9 @@ class DataMapper:
                         # Find the single nearest Neighbor (k=1) 
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
 
-                                        
+                    """Records mesh-to-source distances for QC. For k>1, stores multiple distances
+                     per mesh point (one per neighbor); for k=1 stores a single distance per mesh point """
+                    
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
                         if self.num_neighbors > 1:   # if defined use number of neighbors to append distances
                             for dist in dists: # define updates to the x,y,z positions based on the number of neighbors used to append distances
@@ -111,7 +122,11 @@ class DataMapper:
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )}) # define distance as the hypotenuse between points
                 # Statistical aggregation
-               # Calculate means (Arithmetic, Geometric, Harmonic) based on the neighbors found above
+                # Calculate means (Arithmetic, Geometric, Harmonic) based on the neighbors found above
+                # arithmetic mean works for any real values
+                # geometric/harmonic means requires strictly positive values (undefined for <=0)
+                # in-phase (“inph”) can be negative, so intentionally skips geom/harm for those columns
+                
                 if self.num_neighbors > 1: # apply different mean calcuations if number of neighbors is called
                 
                     for col in df.columns:
@@ -159,7 +174,8 @@ class DataMapper:
 
 
         return result_df, distance_data # call complete results df and distance data
-
+        
+    """ 2D collocation (surface-only): ignores vertical separation and uses only XY proximity """
     def mapXY(self, mesh_df, dataframes, dfnames):
         '''
         Maps dataframes onto a 2D mesh (X, Y).
