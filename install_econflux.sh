@@ -9,4 +9,7 @@ pip install \
     seaborn \
     hydrostats \
     hydroeval \
+    geopandas \
+    resipy \
+    emagpy \
     pysymlog

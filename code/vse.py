@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Nov 11 16:14:07 2025
-
-@author: Chris
-"""
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -26,27 +19,38 @@ plt.rcParams['font.size'] = 14
 plt.rcParams['font.family'] = 'arial'
 
 class EConfluxStats:
-    """
-    EConflux Statistics and Visualization Class
-    For comparing ER vs EM datasets (raw and informed),
-    generating diagnostic plots, and computing hydrological metrics.
-    """
+    '''
+    EConflux Statistics and Visualization class for
+    comparing ER and EM datasets (raw and informed),
+    generating diagnostic plots, and computing performance
+    metrics.
+
+    Inputs are assumed to be positive-valued and may span multiple orders
+    of magnitude.
+    '''
 
     def __init__(self, filepath, informingCol, rawCol, informedCol, drop_flag_col=None, 
                  informingMethod=None, informedMethod=None, units='mS/m', ticks=None, **fontkws):
         
-        """
-        **fontkws: A dictionary to set font properties for all figures created. Possible options include:
+        '''
+        Load ER and EM datasets, apply basic cleaning, and configure plotting defaults.
+
+        Notes for users:
+        * NaNs are always dropped from the three core columns (informingCol, rawCol, informedCol).
+        * Optional flag columns can be used to exclude rows.
+        * Values are filtered to be positive (i.e., > 0) to support log-based analyses.
+        * Units are used for labeling only; no unit conversion is performed.
+        
+        NB: fontkws: A dictionary to set font properties for all figures created. Possible options include:
             fontfamily, fontweight, titlesize, titleweight, axislabelsize, axislabelweight, axisticksize, cbartitlesize, cbartitleweight, cbarticklabelsize
             
             See https://matplotlib.org/stable/api/font_manager_api.html#matplotlib.font_manager.FontProperties for font property options
+        '''
         
-        """
-        
-        # Load dataset
+        # Loading dataset
         self.data = pd.read_csv(filepath)
 
-        # Drop flagged rows
+        # Dropping flagged rows
         self.data.sort_values(by=["Z", "x", "y"], inplace=True, ascending=False)
         if type(drop_flag_col) is list:
             self.data = self.data.dropna(subset=[informingCol, rawCol, informedCol], ignore_index=True)
@@ -63,14 +67,12 @@ class EConfluxStats:
         if drop_flag_col == 'nan':
             self.data = self.data.dropna(subset=[informingCol, rawCol, informedCol], ignore_index=True)
 
+        # Defining core variables
+        self.X = self.data[informingCol].loc[self.data[informingCol] > 0]  # Inversion result from reference method
+        self.y = self.data[rawCol].loc[self.data[rawCol] > 0]        # Inversion result from raw uninformed data
+        self.Y = self.data[informedCol].loc[self.data[informedCol] > 0]    # Inversion result of informed data (incorporating the reference method)
 
-        print('Max Depth = ' + str(abs(min(self.data['Z']))))
-        # Core variables
-        self.X = self.data[informingCol].loc[self.data[informingCol] > 0]  # Inversion Result from Informing Method
-        self.y = self.data[rawCol].loc[self.data[rawCol] > 0]        # Raw Inversion Result
-        self.Y = self.data[informedCol].loc[self.data[informedCol] > 0]    # Informed Inversion Result
-
-        # Log-transformed variables
+        # Defining log-transformed variables
         self.Xlog = np.log10(self.X)
         self.ylog = np.log10(self.y)
         self.Ylog = np.log10(self.Y)
@@ -83,10 +85,7 @@ class EConfluxStats:
         self.ticks = ticks
         self.ticktypes = list(type(item) for item in ticks)
         
-        # Set default font properties
-        
-        
-        
+        # Setting default font properties
         fontkwDict = {'fontfamily': 'sans-serif',
                       'fontweight': 'bold',
                       'titlefontsize': 14,
@@ -107,22 +106,21 @@ class EConfluxStats:
         plt.rcParams['xtick.labelsize'] = fontkwDict['axisticksize']
         plt.rcParams['ytick.labelsize'] = fontkwDict['axisticksize']
 
-
+        # title font
         self.titleFontKws = {
             'fontsize': fontkwDict['titlefontsize'],
             'fontweight': fontkwDict['titlefontweight'],
             }
-        
+        # axis label font
         self.labelFontKws = {
             'fontsize': fontkwDict['axislabelsize'],
             'fontweight': fontkwDict['axislabelweight'],
             }
-
-
+        # colorbar title font
         self.cbarTitleKws = {
             'fontsize': fontkwDict['cbartitlesize'],
             'fontweight': fontkwDict['cbartitleweight']}
-
+        # colorbar tick font
         self.cbarTickKws = {
             'fontsize': fontkwDict['cbarticklabelsize'],
             }
@@ -133,8 +131,19 @@ class EConfluxStats:
     # ==============================================================
 
     @staticmethod
-    def KGEnp(sim, obs, decomp=False):
-        """Non-parametric Kling–Gupta Efficiency."""
+    def KGEnp(sim, obs):
+        '''
+        Non-parametric Kling–Gupta Efficiency, KGEnp (Pool et al., 2018).
+
+        Evaluates model performance using:
+        * rank structure (Spearman correlation),
+        * relative variability (distribution shape),
+        * mean bias.
+
+        Designed to be robust to outliers and non-normal data,
+        which are common in environmental time series.
+        '''
+        
         sim, obs = np.asarray(sim, float), np.asarray(obs, float)
         # mask = np.isfinite(sim) & np.isfinite(obs)
         # sim, obs = sim[mask], obs[mask]
@@ -148,55 +157,35 @@ class EConfluxStats:
         alpha = 1 - 0.5 * np.sum(np.abs(fdc_sim - fdc_obs))
         beta = mean_sim / mean_obs
         r = spearmanr(sim, obs).correlation
-        kge = 1 - np.sqrt((alpha - 1) ** 2 + (beta - 1) ** 2 + (r - 1) ** 2)
 
-        if decomp:
-            return alpha, beta, r, kge
-        else:
-            return kge
+        return 1 - np.sqrt((alpha - 1) ** 2 + (beta - 1) ** 2 + (r - 1) ** 2)
 
-    def metrics(self, logOrlin='log', decompKGE=False):
-        """Return dataframe of evaluation metrics for raw and informed datasets."""
+    def metrics(self, logOrlin='log'):
+        '''
+        Return dataframe of evaluation metrics for raw and informed datasets
+        
+        If logOrlin='log', all metrics are computed in log10 space,
+        which emphasizes relative (multiplicative) differences.
+        '''
         
         if logOrlin == 'log':
             infSim, rawSim, obs = self.Ylog, self.ylog, self.Xlog
         else:
             infSim, rawSim, obs = self.Y, self.y, self.X
         
-        alphaInf, betaInf, rInf, kgeInf = self.KGEnp(infSim, obs, decomp=True)
-        alphaRaw, betaRaw, rRaw, kgeRaw = self.KGEnp(rawSim, obs, decomp=True)
-        
-        if decompKGE:
-            metrics = {
-                "KGE_np": [kgeInf, kgeRaw],
-                "KGE_alpha": [alphaInf, alphaRaw],
-                "KGE_beta": [betaInf, betaRaw],
-                "KGE_r": [rInf, rRaw],
-                "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],
-                "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],
-                "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],
-                "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],
-                "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],
-                "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],
-                "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],
-                "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],
-                "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)],
-                "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]
-            }
-        else:
-            metrics = {
-                "KGE_np": [kgeInf, kgeRaw],
-                "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],
-                "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],
-                "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],
-                "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],
-                "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],
-                "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],
-                "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],
-                "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],
-                "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)],
-                "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]
-            }
+        metrics = {
+            "KGE_np": [self.KGEnp(infSim, obs), self.KGEnp(rawSim, obs)],   # non-parametric Kling–Gupta Efficiency (Pool et al., 2018)
+            "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],   # Kling–Gupta Efficiency (Gupta et al., 2009)
+            "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],   # Kling–Gupta Efficiency (Kling et al., 2012)
+            "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],   # Nash–Sutcliffe Efficiency
+            "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],   # Coefficient of determination
+            "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],   # Pearson correlation coefficient
+            "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],   # Spearman's correlation coefficient
+            "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],   # Mean error
+            "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],   # Mean absolute error
+            "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)],   # Root mean square error
+            "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]   # Normalized root mean square error
+        }
         if (self.informingMethod is not None) & (self.informedMethod is not None):
             return pd.DataFrame(metrics, index=[f"Informed ({self.informedMethod} vs {self.informingMethod})",
                                                 f"Raw ({self.informedMethod} vs {self.informingMethod})"]).T.round(2)
@@ -237,7 +226,7 @@ class EConfluxStats:
             a_nc, b_nc, r2_nc, _ = self._powerlaw_fit(self.X, self.y)
             a_cal, b_cal, r2_cal, _ = self._powerlaw_fit(self.X, self.Y)            
     
-        fig, ax = plt.subplots(layout='constrained')
+        fig, ax = plt.subplots()
     
         if (self.informingMethod is not None) & (self.informedMethod is not None):
             if grayscale:
@@ -270,18 +259,10 @@ class EConfluxStats:
 
         ax.axline((0, 0), slope=1, color="k", linestyle="--", lw=3)
 
-        leg = ax.legend(fontsize=11, frameon=False)
-        for lh in leg.legend_handles:
-            lh.set_alpha(1)
-            
+        ax.legend(fontsize=11, frameon=False)
         ax.set_title("Raw–Informed Scatter Comparison with Power-Law Fits", **self.titleFontKws)
         ax.set_xscale('log')
         ax.set_yscale('log')
-        
-        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
-        ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
         
         if (self.ticks is not None) & (self.informingMethod is not None) & (self.informedMethod is not None):
             ax.set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
@@ -296,15 +277,19 @@ class EConfluxStats:
         else:
             ax.set_xlabel(f"Dataset 1 EC ({self.units})", **self.labelFontKws) 
             ax.set_xlabel(f"Dataset 2 EC ({self.units})", **self.labelFontKws) 
+            
+        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
+        ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
         
         if float not in self.ticktypes:
-            formatter = matplotlib.ticker.StrMethodFormatter("{x:d}")
+            formatter = matplotlib.ticker.StrMethodFormatter("{x:.0f}")
             plt.gca().xaxis.set_major_formatter(formatter)
             plt.gca().yaxis.set_major_formatter(formatter)
+
         
-        ax.tick_params(which='minor', labelbottom=False, labeltop=False, labelleft=False, labelright=False) 
-        
-        # plt.tight_layout()
+        plt.tight_layout()
         if figname is not None:
             plt.savefig(figname, dpi=300)
         else:
@@ -317,8 +302,13 @@ class EConfluxStats:
         }
 
     def kde_histograms(self, nbins=100, figname=None):
-        """Kernel density and histogram plots with metrics annotated."""
-        fig, ax = plt.subplots(1, 2, figsize=(12, 4), sharex=True, sharey=True, layout='constrained')
+       '''
+       Compare EC distributions using log-spaced histograms.
+
+       Plots show how raw and informed datasets differ from the reference with 
+       respect to distribution shape, with annotations of summary error metrics.
+       ''' 
+        fig, ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
 
         # Raw
         if (self.informingMethod is not None) & (self.informedMethod is not None):
@@ -343,18 +333,8 @@ class EConfluxStats:
                    f"KGE_np: {self.KGEnp(self.y, self.X):.2f}",
                    transform=ax[0].transAxes, va="top", fontsize=9)
         
-        titlekws = self.titleFontKws
-        if self.titleFontKws['fontsize'] > 17:
-            titlekws['fontsize'] = 17
-            
-        ax[0].set_title(f"KDE Histogram (Raw {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **titlekws)
+        ax[0].set_title(f"KDE Histogram (Raw {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
         ax[0].set_ylabel('Probability Density', **self.labelFontKws)
-        
-        ax[0].tick_params(which='minor', labelbottom=False, labeltop=False, labelleft=False, labelright=False) 
-
-        if float not in self.ticktypes:
-            formatter = matplotlib.ticker.StrMethodFormatter("{x:d}")
-            plt.gca().xaxis.set_major_formatter(formatter)
 
         # Informed
         if (self.informingMethod is not None) & (self.informedMethod is not None):
@@ -379,15 +359,10 @@ class EConfluxStats:
                    f"KGE_np: {self.KGEnp(self.Y, self.X):.2f}",
                    transform=ax[1].transAxes, va="top", fontsize=9)
         
-        ax[1].set_title(f"KDE Histogram (Informed {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **titlekws)
+        ax[1].set_title(f"KDE Histogram (Informed {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
 
-        ax[1].tick_params(which='minor', labelbottom=False, labeltop=False, labelleft=False, labelright=False) 
 
-        if float not in self.ticktypes:
-            formatter = matplotlib.ticker.StrMethodFormatter("{x:d}")
-            plt.gca().xaxis.set_major_formatter(formatter)
-
-        # plt.tight_layout()
+        plt.tight_layout()
         if figname is not None:
             plt.savefig(figname, dpi=300)
         else:
@@ -395,7 +370,12 @@ class EConfluxStats:
         plt.show()
         
     def qq_plot(self, sim, obs, xlabel='Dataset 1', ylabel='Dataset 2', title="QQ Plot", figname=None):
-        """Quantile-Quantile plot."""
+        '''
+        Quantile-quantile plot (Q-Q) for comparing distributions.
+
+        This diagnostic tool compares distributional similarity rather than pointwise
+        agreement; deviations from the 1:1 line indicate skewness, tail differences, or outliers.
+        '''
         d1, d2 = np.sort(sim[~np.isnan(sim)]), np.sort(obs[~np.isnan(obs)])
         q = np.linspace(0, 1, min(len(d1), len(d2)))
         q1, q2 = np.quantile(d1, q), np.quantile(d2, q)
@@ -418,42 +398,30 @@ class EConfluxStats:
         plt.show()
 
     def bland_altman(self, sim, obs, 
-                     nonparam=False, title=None, ax=None, marker='+', markersize=None, ymin=None, ymax=None, xmin=None, xmax=None, figname=None, 
-                     cbar=False, dcolor=False, dcmap='cividis', dbnds=None, xticks=None, logList=None,
-                     legendParams={'plot': True, 'loc': 'best'},
-                     linekwargs={'color': 'orangered', 'linestyle': ['-', '--'], 'label': ['Mean Difference', 'Upper Agreement Limit', 'Lower Agreement Limit']}, **kwargs):
-        """
+                     title=None, ax=None, ymin=None, ymax=None, xmin=None, xmax=None, figname=None, 
+                     cbar=False, dcolor=False, dcmap='cividis', dbnds=None, xticks=None, logList=None, legendParams={'plot': True, 'loc': 'best'},
+                     savefig=True):
+        '''
         Bland–Altman plot with 95% confidence limits.
-        Returns summary statistics and shows plot.
+        Plots the difference (sim - obs) versus their mean to assess systematic
+        bias and limits of agreement across the measurement range.
+        Returns the plot and shows summary statistics.
                 
         logList: A list where the first entry determines whether to use a log-scale for the x-axis (0 or False for linear, 1 or True for log)
                 and the second entry determines whether to use a log-scale for the y-axis. (e.g. [1, 0] means that the x-axis is a log-scale and the y-axis is linear)     
                 
-        """
+        '''
         diff = sim - obs
-        mean = (sim + obs) / 2
+        mean = (sim + obs) / 2   # Mean difference represents bias
 
-        
-        mainlinestyle = linekwargs['linestyle'][0]
-        loalinestyle = linekwargs['linestyle'][1]
-        del linekwargs['linestyle']
-        
-        midlinelabel = linekwargs['label'][0]
-        upperlinelabel = linekwargs['label'][1]
-        lowerlinelabel = linekwargs['label'][2]
-        del linekwargs['label']
+        sdev_diff = np.std(diff)   # defining the standard-deviation of the difference
+        mean_diff = np.mean(diff)   # defining the mean difference
 
-        if nonparam:
-            mid = np.median(diff)
-            upper = np.quantile(diff, 0.975)
-            lower = np.quantile(diff, 0.025)
-        else:
-            sdev_diff = np.std(diff)
-            mid = np.mean(diff)
-            upper = mid + (1.96 * sdev_diff)
-            lower = mid - (1.96 * sdev_diff)
+        # ±1.96σ defines the 95% limits of agreement
+        UCL = mean_diff + (1.96 * sdev_diff)   # the upper confidence limit of agreement
+        LCL = mean_diff - (1.96 * sdev_diff)   # the lower confidence limit of agreement
 
-        # ratio_lower, ratio_upper = np.exp(lower), np.exp(upper)  # Double-check need for this
+        ratio_lower, ratio_upper = np.exp(LCL), np.exp(UCL)
         
         if logList is not None:
             if type(logList[0]) != bool:
@@ -481,24 +449,19 @@ class EConfluxStats:
                         
             cmmapable = cm.ScalarMappable(norm, dcmap)
             
-            # ticks = np.linspace(0, abs(self.data['Z'].min()).round(1), 5)
-            
-            # formattedTicks = np.array([f"{x:.1f}" for x in ticks])
-            ax.scatter(mean, diff, c=abs(self.data['Z']), marker=marker, s=markersize, cmap=dcmap, norm=norm, **kwargs)
+            ax.scatter(mean, diff, c=abs(self.data['Z']), cmap=dcmap, norm=norm, alpha=0.3, marker="+")
             if cbar:
                 cb = plt.colorbar(cmmapable, ax=ax, location='right', orientation='vertical', boundaries=dbnds)
                 cb.set_label('Depth (m)', **self.cbarTitleKws)
                 cb.ax.tick_params(axis='y', labelsize=self.cbarTickKws['fontsize'])
         else:
-            ax.scatter(mean, diff, marker=marker, s=markersize, **kwargs)
-
-        ax.axhline(mid, linestyle=mainlinestyle, label=midlinelabel, **linekwargs)
-        ax.axhline(upper, linestyle=loalinestyle, label=upperlinelabel, **linekwargs)
-        ax.axhline(lower, linestyle=loalinestyle, label=lowerlinelabel, **linekwargs)
+            ax.scatter(mean, diff, color='k', alpha=0.2, marker="+")
+        
+        ax.axhline(mean_diff, color="orangered", linestyle="-", label="Mean diff")
+        ax.axhline(UCL, color="orangered", linestyle="--", label="Upper 95% limit")
+        ax.axhline(LCL, color="orangered", linestyle="--", label="Lower 95% limit")
         if legendParams['plot']:
-            leg = ax.legend(loc=legendParams['loc'], fontsize=plt.rcParams['font.size']-3)
-            for lh in leg.legend_handles:
-                lh.set_alpha(1)
+            ax.legend(loc=legendParams['loc'])
 
         if ax.get_xlabel() == '':
             ax.set_xlabel("Mean EC " + f"({self.units})", **self.labelFontKws)
@@ -519,26 +482,17 @@ class EConfluxStats:
             ax.set_xticks(xticks)
         ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
         ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
+        if savefig:
+            plt.tight_layout()
+            if figname is not None:
+                plt.savefig(figname, dpi=300)
+            else:
+                plt.savefig('bland_altman.png', dpi=300)        
 
-        if float not in self.ticktypes:
-            formatter = matplotlib.ticker.StrMethodFormatter("{x:1g}")
-            plt.gca().xaxis.set_major_formatter(formatter)
-        if float not in [type(t) for t in ax.get_yticks()]:
-            formatter = matplotlib.ticker.StrMethodFormatter("{x:1g}")
-            plt.gca().yaxis.set_major_formatter(formatter)
-
-        if figname is not None:
-            plt.savefig(figname, dpi=300)
-        else:
-            plt.savefig('bland_altman.png', dpi=300)
-        # plt.show()
-        
-        if nonparam:
-            return print('\nMedian Difference: ' + str(round(mid, 3)) + ' ' + self.units + '\n' + 
-                         'Upper Limit of Agreement: ' + str(round(upper, 3)) + ' ' + self.units + '\n' +
-                         'Lower Limit of Agreement: ' + str(round(lower, 3)) + ' ' + self.units)
-
-        else:    
-            return print('\nMean Difference: ' + str(round(mid, 3)) + ' ' + self.units + '\n' + 
-                         'Upper Limit of Agreement: ' + str(round(upper, 3)) + ' ' + self.units + '\n' + 
-                         'Lower Limit of Agreement: ' + str(round(lower, 3)) + ' ' + self.units)
+        return {
+            "Mean difference": round(mean_diff, 3),
+            "Std. deviation": round(sdev_diff, 3),
+            "Upper 95% limit": round(UCL, 3),
+            "Lower 95% limit": round(LCL, 3),
+            "Ratio range": f"{ratio_lower:.2f}× – {ratio_upper:.2f}× ER"
+        }

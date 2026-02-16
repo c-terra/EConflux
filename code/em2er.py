@@ -4,6 +4,11 @@ Self-contained mapper to seed ResIPy k.mesh.df['res0'] from EMI data.
 Includes the helper `local_grid_to_utm_along_line` so no external geometry
 utilities are required.
 
+NB: Column headers require the following format, horizontal co-planar (HCP) or perpendicular (PRP), followed by the coil spacing (i.e., 1.0 or 1.1), and _inph represents the associated in-phase column.
+['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']
+['HCP2.0', 'HCP2.0_inph', 'PRP2.1', 'PRP2.1_inph'] 
+['HCP4.0', 'HCP4.0_inph', 'PRP4.1', 'PRP4.1_inph'] 
+
 Exports:
 - local_grid_to_utm_along_line
 - em2er_map
