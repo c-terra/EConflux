@@ -131,7 +131,7 @@ class EConfluxStats:
     # ==============================================================
 
     @staticmethod
-    def KGEnp(sim, obs):
+    def KGEnp(sim, obs, decomp=False):
         '''
         Non-parametric Kling–Gupta Efficiency, KGEnp (Pool et al., 2018).
 
@@ -142,6 +142,13 @@ class EConfluxStats:
 
         Designed to be robust to outliers and non-normal data,
         which are common in environmental time series.
+        
+        sim: numpy.array
+            Simulated values
+        obs: numpy.array
+            Observed values
+        decomp: Optional[bool]
+            If True, will return alpha, beta, and r components of non-parametric KGE.
         '''
         
         sim, obs = np.asarray(sim, float), np.asarray(obs, float)
@@ -157,35 +164,61 @@ class EConfluxStats:
         alpha = 1 - 0.5 * np.sum(np.abs(fdc_sim - fdc_obs))
         beta = mean_sim / mean_obs
         r = spearmanr(sim, obs).correlation
+        kge = 1 - np.sqrt((alpha - 1) ** 2 + (beta - 1) ** 2 + (r - 1) ** 2)
 
-        return 1 - np.sqrt((alpha - 1) ** 2 + (beta - 1) ** 2 + (r - 1) ** 2)
-
-    def metrics(self, logOrlin='log'):
+        if decomp:
+            return alpha, beta, r, kge
+        else:
+            return kge
+        
+    def metrics(self, logOrlin='log', decompKGE=False):
         '''
         Return dataframe of evaluation metrics for raw and informed datasets
         
-        If logOrlin='log', all metrics are computed in log10 space,
-        which emphasizes relative (multiplicative) differences.
+        logOrlin: Optional[str]
+            Whether to use the log-transformed or linear values for statistical metrics. Default is 'log'.
+        decompKGE: Optional[bool]
+            If True, will include separate components of non-parametric KGE in metrics list.
         '''
         
         if logOrlin == 'log':
             infSim, rawSim, obs = self.Ylog, self.ylog, self.Xlog
         else:
             infSim, rawSim, obs = self.Y, self.y, self.X
-        
-        metrics = {
-            "KGE_np": [self.KGEnp(infSim, obs), self.KGEnp(rawSim, obs)],   # non-parametric Kling–Gupta Efficiency (Pool et al., 2018)
-            "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],   # Kling–Gupta Efficiency (Gupta et al., 2009)
-            "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],   # Kling–Gupta Efficiency (Kling et al., 2012)
-            "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],   # Nash–Sutcliffe Efficiency
-            "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],   # Coefficient of determination
-            "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],   # Pearson correlation coefficient
-            "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],   # Spearman's correlation coefficient
-            "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],   # Mean error
-            "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],   # Mean absolute error
-            "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)],   # Root mean square error
-            "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]   # Normalized root mean square error
-        }
+            
+        if decompKGE:
+            alphaInf, betaInf, rInf, kgeInf = self.KGEnp(infSim, obs, decomp=True)
+            alphaRaw, betaRaw, rRaw, kgeRaw = self.KGEnp(rawSim, obs, decomp=True)
+            metrics = {
+                "KGE_np": [kgeInf, kgeRaw], # non-parametric Kling–Gupta Efficiency (Pool et al., 2018)
+                "KGE_alpha": [alphaInf, alphaRaw], # alpha parameter for non-parametric KGE. Represents bias between simulated and observed standard deviation
+                "KGE_beta": [betaInf, betaRaw], # beta parameter for non-parametric KGE. Represents bias between simulated and observed means
+                "KGE_r": [rInf, rRaw], # r parameter for non-parametric KGE. Represents Spearman's correlation coefficient. Should equal Spearman r calculated later
+                "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],  # Kling–Gupta Efficiency (Gupta et al., 2009)
+                "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)], # Kling–Gupta Efficiency (Kling et al., 2012)
+                "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)], # Nash–Sutcliffe Efficiency
+                "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)], # Coefficient of determination
+                "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)], # Pearson correlation coefficient
+                "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)], # Spearman's correlation coefficient
+                "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)], # Mean error
+                "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)], # Mean absolute error
+                "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)], # Root mean square error
+                "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]# Normalized root mean square error
+            }
+        else:
+            metrics = {
+                "KGE_np": [self.KGEnp(infSim, obs), self.KGEnp(rawSim, obs)],   
+                "KGE_2009": [hs.kge_2009(infSim, obs), hs.kge_2009(rawSim, obs)],  
+                "KGE_2012": [hs.kge_2012(infSim, obs), hs.kge_2012(rawSim, obs)],   
+                "NSE": [hs.nse(infSim, obs), hs.nse(rawSim, obs)],   
+                "R²": [hs.r_squared(infSim, obs), hs.r_squared(rawSim, obs)],   
+                "Pearson r": [hs.pearson_r(infSim, obs), hs.pearson_r(rawSim, obs)],   
+                "Spearman r": [hs.spearman_r(infSim, obs), hs.spearman_r(rawSim, obs)],   
+                "ME": [hs.me(infSim, obs), hs.me(rawSim, obs)],   
+                "MAE": [hs.mae(infSim, obs), hs.mae(rawSim, obs)],   
+                "RMSE": [hs.rmse(infSim, obs), hs.rmse(rawSim, obs)],   
+                "NRMSE_range": [hs.nrmse_range(infSim, obs), hs.nrmse_range(rawSim, obs)]   
+            }
         if (self.informingMethod is not None) & (self.informedMethod is not None):
             return pd.DataFrame(metrics, index=[f"Informed ({self.informedMethod} vs {self.informingMethod})",
                                                 f"Raw ({self.informedMethod} vs {self.informingMethod})"]).T.round(2)
@@ -218,8 +251,13 @@ class EConfluxStats:
     def scatter_plots(self, log=True, grayscale=False, figname=None):
         """
         Scatter plots comparing ER vs EM (raw and informed).
-        Left panel: log10 scatter of observed values.
-        Right panel: log10 scatter with power-law fits.
+        
+        log: Optional[bool]
+            If True, will plot the log transformed values
+        grayscale: Optional[bool]
+            If True, will plot in grayscale
+        figname: Optional[str]
+            Name to use for saving the plot to a .png
         """
         # Fit power-law models (raw + informed)
         if log:
@@ -307,67 +345,72 @@ class EConfluxStats:
 
        Plots show how raw and informed datasets differ from the reference with 
        respect to distribution shape, with annotations of summary error metrics.
+       
+       nbins: Optional[int]
+           Number of bins to use for histogram. Default is 100.
+       figname: Optional[str]
+           Name to use for saving the plot to a .png
        ''' 
-        fig, ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+       
+       fig, ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
 
-        # Raw
-        if (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[0].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label=self.informingMethod)
-            ax[0].hist(self.y, bins=np.geomspace(self.y.min(), self.y.max(), nbins), density=True, alpha=0.7, color='peru', label=self.informedMethod)
-        else:
-            ax[0].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label='Dataset 1')
-            ax[0].hist(self.y, bins=np.geomspace(self.y.min(), self.y.max(), nbins), density=True, alpha=0.7, color='peru', label='Dataset 2')
-        ax[0].legend()
-        ax[0].set_xlabel("Electrical Conductivity (mS/m)", **self.labelFontKws)
-        ax[0].set_xscale('log')
-        if self.ticks is not None:
-            ax[0].set_xlim(self.ticks[0], self.ticks[1])
-            ax[0].set_xticks(self.ticks)
+       # Raw
+       if (self.informingMethod is not None) & (self.informedMethod is not None):
+           ax[0].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label=self.informingMethod)
+           ax[0].hist(self.y, bins=np.geomspace(self.y.min(), self.y.max(), nbins), density=True, alpha=0.7, color='peru', label=self.informedMethod)
+       else:
+           ax[0].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label='Dataset 1')
+           ax[0].hist(self.y, bins=np.geomspace(self.y.min(), self.y.max(), nbins), density=True, alpha=0.7, color='peru', label='Dataset 2')
+       ax[0].legend()
+       ax[0].set_xlabel("Electrical Conductivity (mS/m)", **self.labelFontKws)
+       ax[0].set_xscale('log')
+       if self.ticks is not None:
+           ax[0].set_xlim(self.ticks[0], self.ticks[1])
+           ax[0].set_xticks(self.ticks)
+           
+       ax[0].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+       ax[0].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
         
-        ax[0].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax[0].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
+       ax[0].text(0.05, 0.95,
+                  f"RMSE: {hs.rmse(self.y, self.X):.2f}\n"
+                  f"PBIAS: {he.evaluator(he.pbias, self.y, self.X)[0]:.2f}\n"
+                  f"KGE_np: {self.KGEnp(self.y, self.X):.2f}",
+                  transform=ax[0].transAxes, va="top", fontsize=9)
         
-        ax[0].text(0.05, 0.95,
-                   f"RMSE: {hs.rmse(self.y, self.X):.2f}\n"
-                   f"PBIAS: {he.evaluator(he.pbias, self.y, self.X)[0]:.2f}\n"
-                   f"KGE_np: {self.KGEnp(self.y, self.X):.2f}",
-                   transform=ax[0].transAxes, va="top", fontsize=9)
+       ax[0].set_title(f"KDE Histogram (Raw {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
+       ax[0].set_ylabel('Probability Density', **self.labelFontKws)
+    
+       # Informed
+       if (self.informingMethod is not None) & (self.informedMethod is not None):
+           ax[1].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label=self.informingMethod)
+           ax[1].hist(self.Y, bins=np.geomspace(self.Y.min(), self.Y.max(), nbins), density=True, alpha=0.7, color='peru', label=self.informedMethod)
+       else:
+           ax[1].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label='Dataset 1')
+           ax[1].hist(self.Y, bins=np.geomspace(self.Y.min(), self.Y.max(), nbins), density=True, alpha=0.7, color='peru', label='Dataset 2')
+       ax[1].legend()
+       ax[1].set_xlabel(f"Electrical Conductivity ({self.units})", **self.labelFontKws)
+       ax[1].set_xscale('log')
+       if self.ticks is not None:
+           ax[1].set_xlim(self.ticks[0], self.ticks[1])
+           ax[1].set_xticks(self.ticks)
+           
+       ax[1].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+       ax[1].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
         
-        ax[0].set_title(f"KDE Histogram (Raw {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
-        ax[0].set_ylabel('Probability Density', **self.labelFontKws)
-
-        # Informed
-        if (self.informingMethod is not None) & (self.informedMethod is not None):
-            ax[1].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label=self.informingMethod)
-            ax[1].hist(self.Y, bins=np.geomspace(self.Y.min(), self.Y.max(), nbins), density=True, alpha=0.7, color='peru', label=self.informedMethod)
-        else:
-            ax[1].hist(self.X, bins=np.geomspace(self.X.min(), self.X.max(), nbins), density=True, alpha=0.7, color='dodgerblue', label='Dataset 1')
-            ax[1].hist(self.Y, bins=np.geomspace(self.Y.min(), self.Y.max(), nbins), density=True, alpha=0.7, color='peru', label='Dataset 2')
-        ax[1].legend()
-        ax[1].set_xlabel(f"Electrical Conductivity ({self.units})", **self.labelFontKws)
-        ax[1].set_xscale('log')
-        if self.ticks is not None:
-            ax[1].set_xlim(self.ticks[0], self.ticks[1])
-            ax[1].set_xticks(self.ticks)
+       ax[1].text(0.05, 0.95,
+                  f"RMSE: {hs.rmse(self.Y, self.X):.2f}\n"
+                  f"PBIAS: {he.evaluator(he.pbias, self.Y, self.X)[0]:.2f}\n"
+                  f"KGE_np: {self.KGEnp(self.Y, self.X):.2f}",
+                  transform=ax[1].transAxes, va="top", fontsize=9)
         
-        ax[1].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax[1].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
-        
-        ax[1].text(0.05, 0.95,
-                   f"RMSE: {hs.rmse(self.Y, self.X):.2f}\n"
-                   f"PBIAS: {he.evaluator(he.pbias, self.Y, self.X)[0]:.2f}\n"
-                   f"KGE_np: {self.KGEnp(self.Y, self.X):.2f}",
-                   transform=ax[1].transAxes, va="top", fontsize=9)
-        
-        ax[1].set_title(f"KDE Histogram (Informed {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
-
-
-        plt.tight_layout()
-        if figname is not None:
-            plt.savefig(figname, dpi=300)
-        else:
-            plt.savefig('kde hist.png', dpi=300)
-        plt.show()
+       ax[1].set_title(f"KDE Histogram (Informed {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
+    
+       plt.tight_layout()
+       if figname is not None:
+           plt.savefig(figname, dpi=300)
+       else:
+           plt.savefig('kde hist.png', dpi=300)
+       plt.show()
         
     def qq_plot(self, sim, obs, xlabel='Dataset 1', ylabel='Dataset 2', title="QQ Plot", figname=None):
         '''
@@ -375,6 +418,17 @@ class EConfluxStats:
 
         This diagnostic tool compares distributional similarity rather than pointwise
         agreement; deviations from the 1:1 line indicate skewness, tail differences, or outliers.
+        
+        sim: numpy.array
+            Simulated values
+        obs: numpy.array
+            Observed values
+        xlabel: Optional[str]
+            Label for x-axis of Q-Q plot
+        ylabel: Optional[str]
+            Label for y-axis of Q-Q plot
+        figname: Optional[str]
+            Name to use for saving the plot to a .png
         '''
         d1, d2 = np.sort(sim[~np.isnan(sim)]), np.sort(obs[~np.isnan(obs)])
         q = np.linspace(0, 1, min(len(d1), len(d2)))
@@ -398,30 +452,73 @@ class EConfluxStats:
         plt.show()
 
     def bland_altman(self, sim, obs, 
-                     title=None, ax=None, ymin=None, ymax=None, xmin=None, xmax=None, figname=None, 
-                     cbar=False, dcolor=False, dcmap='cividis', dbnds=None, xticks=None, logList=None, legendParams={'plot': True, 'loc': 'best'},
-                     savefig=True):
+                     nonparam=False, title=None, ax=None, marker='+', markersize=None,
+                     ymin=None, ymax=None, xmin=None, xmax=None, figname=None, xticks=None, logList=None,
+                     legendParams={'plot': True, 'loc': 'best'},
+                     linekwargs={'color': 'orangered', 'linestyle': ['-', '--'], 'label': ['Mean Difference', 'Upper Agreement Limit', 'Lower Agreement Limit']}, **kwargs):
         '''
-        Bland–Altman plot with 95% confidence limits.
+        Bland–Altman plot.
         Plots the difference (sim - obs) versus their mean to assess systematic
         bias and limits of agreement across the measurement range.
         Returns the plot and shows summary statistics.
-                
+            
+        sim: numpy.array
+            Simulated values
+        obs: numpy.array
+            Observed values
+        nonparam: Optional[bool]
+            If True, will plot the non-parametric Bland-Altman plots using the median of the differences and the 2.5th and 97.5th quantiles to determine bounds (see Chen and Kao 2021, or Gerke 2020)
+        title: Optional[str]
+            Title for Bland-Altman plot
+        ax: Optional[matplotlib.Axes]
+            Matplotlib Axes object to use for plotting
+        marker: Optional[str]
+            Marker type to use ofr Bland-Altman points. Default is '+'. See https://matplotlib.org/stable/api/markers_api.html#module-matplotlib.markers for more options
+        markersize: Optional[float]
+            Size (in points) for Bland-Altman markers
+        ymin: Optional[float]
+            Minimum value to use for the y-axis (difference between sim and obs values)
+        ymax: Optional[float]
+            Maximum value to use for the y-axis (difference between sim and obs values)
+        xmin: Optional[float]
+            Minimum value to use for the x-axis (Mean of sim and obs values)
+        xmax: Optional[float]
+            Maximum value to use for the x-axis (Mean of sim and obs values)     
+        figname: Optional[str]
+            Name to use for saving the plot to a .png
+        xticks: Optional[list]
+            List of numbers to set for x-axis ticks
         logList: A list where the first entry determines whether to use a log-scale for the x-axis (0 or False for linear, 1 or True for log)
-                and the second entry determines whether to use a log-scale for the y-axis. (e.g. [1, 0] means that the x-axis is a log-scale and the y-axis is linear)     
-                
+                and the second entry determines whether to use a log-scale for the y-axis. (e.g. [1, 0] means that the x-axis is a log-scale and the y-axis is linear)
+        legendParams: Optional[dict]
+            Dictionary to define whether to plot the legend ('plot') and what location to pass to ax.legend(loc='') ('loc')
+        linekwargs: Optional[dict]
+            Dictionary to define colors, linestyles, and labels for each line plotted on Bland-Altman plot
         '''
         diff = sim - obs
         mean = (sim + obs) / 2   # Mean difference represents bias
 
         sdev_diff = np.std(diff)   # defining the standard-deviation of the difference
-        mean_diff = np.mean(diff)   # defining the mean difference
 
-        # ±1.96σ defines the 95% limits of agreement
-        UCL = mean_diff + (1.96 * sdev_diff)   # the upper confidence limit of agreement
-        LCL = mean_diff - (1.96 * sdev_diff)   # the lower confidence limit of agreement
+        mainlinestyle = linekwargs['linestyle'][0]
+        loalinestyle = linekwargs['linestyle'][1]
+        del linekwargs['linestyle']
+        midlinelabel = linekwargs['label'][0]
+        upperlinelabel = linekwargs['label'][1]
+        lowerlinelabel = linekwargs['label'][2]
+        del linekwargs['label']
 
-        ratio_lower, ratio_upper = np.exp(LCL), np.exp(UCL)
+        if nonparam:
+            mid = np.median(diff)
+            # 97.5th and 2.5th quantiles define the limits of agreement
+            upper = np.quantile(diff, 0.975)
+            lower = np.quantile(diff, 0.025)
+        else:
+            sdev_diff = np.std(diff)
+            mid = np.mean(diff)
+            # ±1.96σ defines the 95% limits of agreement
+            upper = mid + (1.96 * sdev_diff)  # the upper confidence limit of agreement
+            lower = mid - (1.96 * sdev_diff)  # the lower confidence limit of agreement
         
         if logList is not None:
             if type(logList[0]) != bool:
@@ -439,29 +536,16 @@ class EConfluxStats:
         # ---- Plot ----
         if ax is None:
             fig, ax = plt.subplots()
-        if dcolor:
-            if dbnds is not None:
-                if plt.get_cmap(dcmap).N == 256:
-                    dcmap = plt.get_cmap(dcmap, len(dbnds))
-                norm = mpl.colors.BoundaryNorm(dbnds, ncolors=len(dbnds))
-            else:
-                norm = mpl.colors.Normalize(vmin=0, vmax=abs(self.data['Z'].min()))
-                        
-            cmmapable = cm.ScalarMappable(norm, dcmap)
-            
-            ax.scatter(mean, diff, c=abs(self.data['Z']), cmap=dcmap, norm=norm, alpha=0.3, marker="+")
-            if cbar:
-                cb = plt.colorbar(cmmapable, ax=ax, location='right', orientation='vertical', boundaries=dbnds)
-                cb.set_label('Depth (m)', **self.cbarTitleKws)
-                cb.ax.tick_params(axis='y', labelsize=self.cbarTickKws['fontsize'])
-        else:
-            ax.scatter(mean, diff, color='k', alpha=0.2, marker="+")
-        
-        ax.axhline(mean_diff, color="orangered", linestyle="-", label="Mean diff")
-        ax.axhline(UCL, color="orangered", linestyle="--", label="Upper 95% limit")
-        ax.axhline(LCL, color="orangered", linestyle="--", label="Lower 95% limit")
+
+        ax.scatter(mean, diff, marker=marker, s=markersize, **kwargs)
+
+        ax.axhline(mid, linestyle=mainlinestyle, label=midlinelabel, **linekwargs)
+        ax.axhline(upper, linestyle=loalinestyle, label=upperlinelabel, **linekwargs)
+        ax.axhline(lower, linestyle=loalinestyle, label=lowerlinelabel, **linekwargs)
         if legendParams['plot']:
-            ax.legend(loc=legendParams['loc'])
+            leg = ax.legend(loc=legendParams['loc'], fontsize=plt.rcParams['font.size']-3)
+            for lh in leg.legend_handles:
+                lh.set_alpha(1)
 
         if ax.get_xlabel() == '':
             ax.set_xlabel("Mean EC " + f"({self.units})", **self.labelFontKws)
@@ -482,17 +566,25 @@ class EConfluxStats:
             ax.set_xticks(xticks)
         ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
         ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, pos: str(float(y))))
-        if savefig:
-            plt.tight_layout()
-            if figname is not None:
-                plt.savefig(figname, dpi=300)
-            else:
-                plt.savefig('bland_altman.png', dpi=300)        
 
-        return {
-            "Mean difference": round(mean_diff, 3),
-            "Std. deviation": round(sdev_diff, 3),
-            "Upper 95% limit": round(UCL, 3),
-            "Lower 95% limit": round(LCL, 3),
-            "Ratio range": f"{ratio_lower:.2f}× – {ratio_upper:.2f}× ER"
-        }
+        if float not in self.ticktypes:
+            formatter = matplotlib.ticker.StrMethodFormatter("{x:1g}")
+            plt.gca().xaxis.set_major_formatter(formatter)
+        if float not in [type(t) for t in ax.get_yticks()]:
+            formatter = matplotlib.ticker.StrMethodFormatter("{x:1g}")
+            plt.gca().yaxis.set_major_formatter(formatter)
+
+        if figname is not None:
+            plt.savefig(figname, dpi=300)
+        else:
+            plt.savefig('bland_altman.png', dpi=300)
+        
+        if nonparam:
+            return print('\nMedian Difference: ' + str(round(mid, 3)) + ' ' + self.units + '\n' + 
+                         'Upper Limit of Agreement: ' + str(round(upper, 3)) + ' ' + self.units + '\n' +
+                         'Lower Limit of Agreement: ' + str(round(lower, 3)) + ' ' + self.units)
+
+        else:    
+            return print('\nMean Difference: ' + str(round(mid, 3)) + ' ' + self.units + '\n' + 
+                         'Upper Limit of Agreement: ' + str(round(upper, 3)) + ' ' + self.units + '\n' + 
+                         'Lower Limit of Agreement: ' + str(round(lower, 3)) + ' ' + self.units)

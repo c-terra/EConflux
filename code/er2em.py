@@ -15,27 +15,31 @@ class DataMapper:
 
         NB: Column headers require the following format, horizontal co-planar (HCP) or 
         perpendicular (PRP), followed by the coil spacing (i.e., 1.0 or 1.1), and _inph 
-        represents the associated in-phase column.
-        ['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']
-        ['HCP2.0', 'HCP2.0_inph', 'PRP2.1', 'PRP2.1_inph'] 
-        ['HCP4.0', 'HCP4.0_inph', 'PRP4.1', 'PRP4.1_inph'] 
+        represents the associated in-phase column. 
+        e.g. ['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']
         
         Parameters:
         - num_neighbors: Number of nearby points to consider for averaging.
         - max_distance_xy: Horizontal search radius (meters).
         - max_distance_z: Vertical search radius (meters).
-        - ckdMethod: 'num' (fixed neighbors), 'dist' (radius-based), or 'auto' (dynamic threshold).
-    '''
-        """collocate one or more source datasets (dataframes)
+        - ckdMethod: 'num' (fixed neighbors), 'dist' (radius-based),
+                     'autoNum' (determine distance threshold and use number of k-nearest neighbors), 
+                     or 'autoDist' (determine distance threshold and use all nearest neighbors within that theshold).
+        - njobs: Number of CPU threads to use for parallel processing in scipy.ckdTree. 
+                 Default is 1. Setting to -1 will use all available threads.
+    
+        collocate one or more source datasets (dataframes)
            onto a target mesh (mesh_df) using nearest neighbors / radius search, and optionally compute
-           arithmetic/geometric/harmonic averages + distance diagnostics"""
+           arithmetic/geometric/harmonic averages + distance diagnostics
+           
+    '''
 
     def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1): # standard kwargs for the DataMapper class
         self.num_neighbors = num_neighbors # number of neighbors spatially closest to the data
         self.max_distance_xy = max_distance_xy # maximum distance to be examined on the x-y plane
         self.max_distance_z = max_distance_z # maximum depth/elevation to be examined on the z axis
         self.ckdMethod = ckdMethod   # 'num' for original implementation, 'dist' to average all points within the max_distance, 'auto' to automatically determine the max_distance
-        self.njobs = njobs
+        self.njobs = njobs   # Number of threads to use for parallel processing. Default is 1. Setting to -1 uses all available CPU threads.
     
     # defining mesh dataframe with x, y, Z geometry for mapping, collocation, and binning of data
     def mapXYZ(self, mesh_df, dataframes, dfnames):
@@ -61,10 +65,10 @@ class DataMapper:
                    distance = inf and index = len(df). Downstream logic must ignore those invalid neighbors"""
                 
                 if self.ckdMethod == 'num': # determine if number of neighbors is defined
-                    if self.num_neighbors > 1: # if defined use number of neighbors to inform distances
+                    if self.num_neighbors > 1: 
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=maxDist, workers=self.njobs)
                         
-                    else: # if not defined use all data possible to inform distances
+                    else:
                         # Find the single nearest Neighbor (k=1) 
                         distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
 
@@ -72,11 +76,24 @@ class DataMapper:
                      per mesh point (one per neighbor); for k=1 stores a single distance per mesh point """
                     
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
-                        if self.num_neighbors > 1:   # if defined use number of neighbors to append distances
-                            for dist in dists: # define updates to the x,y,z positions based on the number of neighbors used to append distances
-                                distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dist})
-                        else:   # if not defined use all data possible to append distances
-                            distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'Z': mesh_df.iloc[i]['Z'], 'distance': dists})
+                        if self.num_neighbors != 1:
+                            remidxs = []
+                            if len(df) not in idxs:
+                                for j in range(len(idxs)):
+                                    if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[i, 'Z']) > self.max_distance_z:   # Remove points outside of max_distance_z
+                                        remidxs.append(j)
+                            idxs = [val for k, val in enumerate(idxs) if k not in remidxs]
+                            dists = [val for l, val in enumerate(dists) if l not in remidxs]
+                            for m in range(len(idxs)):
+                                distance_data.append({'x': mesh_df.loc[idxs[m], 'x'],
+                                                      'y': mesh_df.loc[idxs[m], 'y'],
+                                                      'Z': mesh_df.loc[idxs[m], 'Z'],
+                                                      'distance': dists[m]})
+                        else:
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'Z': mesh_df.loc[i, 'Z'],
+                                                  'distance': dists})
 
                 # Query all points within a fixed distance ('dist')            
                 elif self.ckdMethod == 'dist':
@@ -86,6 +103,12 @@ class DataMapper:
 
                     # Calculate distances manually since query_ball_point only returns indices
                     for row_idx, idxs in enumerate(indices):
+                        remidxs = []
+                        if len(df) not in idxs:
+                            for j in range(len(idxs)):
+                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:  # Remove points outside of max_distance_z
+                                    remidxs.append(j)
+                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
                                                   'y': mesh_df.loc[row_idx, 'y'],
@@ -94,33 +117,71 @@ class DataMapper:
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )})
-                # Automatically determine a threshold based on nearest-neighbor density ('auto')    
-                elif self.ckdMethod == 'auto':
+                # Automatically determine a threshold based on nearest-neighbor distances and applies the 'num' ckdMethod.  
+                elif self.ckdMethod == 'autoNum':
 
                     # First, query k-neighbors to find how far apart points typically are
                     distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
                     minDist = []
-                    for dists in distances:
-                        minDist.append(min(dists))
+                    if self.num_neighbors > 1:
+                        for dists in distances:
+                            minDist.append(min(dists))
+                    else:
+                        minDist.append(distances)
                     distThresh = max(minDist) # Set threshold to cover all points
 
                     # Re-query using the calculated dynamic threshold
-                    indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, distThresh, workers=self.njobs)
-                    
-                    # idxarr = np.array(idxs)
-                    # points = mesh_df[idxarr]
+                    indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
 
-                    
                     # update indexes based on distance appendix
                     for row_idx, idxs in enumerate(indices):
+                        remidxs = []
+                        if len(df) not in idxs:
+                            for j in range(len(idxs)):
+                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:  # Remove points outside of max_distance_z
+                                    remidxs.append(j)
+                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
                                                   'y': mesh_df.loc[row_idx, 'y'],
-                                                  'Z': mesh_df.loc[row_idx,'Z'],
+                                                  'Z': mesh_df.loc[row_idx, 'Z'],
                                                   'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
                                                                       ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )}) # define distance as the hypotenuse between points
+                
+                # Automatically determine a threshold based on nearest-neighbor distances and applies the 'dist' ckdMethod.  
+                elif self.ckdMethod == 'autoDist':
+                    
+                    distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
+                    minDist = []
+                    if self.num_neighbors > 1:
+                        for dists in distances:
+                            minDist.append(min(dists))
+                    else:
+                        minDist.append(distances)
+                    distThresh = max(minDist)
+                    
+                    # Re-query using the calculated dynamic threshold
+                    indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, distThresh, workers=self.njobs)
+                    
+                    # update indexes based on distance appendix
+                    for row_idx, idxs in enumerate(indices):
+                        remidxs = []
+                        if len(df) not in idxs:
+                            for j in range(len(idxs)):
+                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:   # Remove points outside of max_distance_z
+                                    remidxs.append(j)
+                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
+                        for index in idxs:
+                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
+                                                  'y': mesh_df.loc[row_idx, 'y'],
+                                                  'Z': mesh_df.loc[row_idx, 'Z'],
+                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
+                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
+                                                                      ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
+                                                                      )})
+                            
                 # Statistical aggregation
                 # Calculate means (Arithmetic, Geometric, Harmonic) based on the neighbors found above
                 # arithmetic mean works for any real values
@@ -152,14 +213,24 @@ class DataMapper:
                                     harmonic_means.append(np.nan)  # if not valid, NaN harmonic mean
 
                             # Store results in the result dataframe
-                            result_df[f'{dfnames[idx]}_{col}_arith'] = arithmetic_means # append arithmetic means to results df
-                            # 'inph' (In-phase) data can be negative, so we skip Geom/Harm means for it
-                            if 'inph' in col:
-                                result_df[f'{dfnames[idx]}_{col}_geom'] = arithmetic_means # append in-phase arithmetic means only
-                                result_df[f'{dfnames[idx]}_{col}_harm'] = arithmetic_means
+                            # Handle cases where dfname is empty 
+                            if dfnames[idx] == '':
+                                result_df[f'{col}_arith'] = arithmetic_means
+                                if 'inph' in col:
+                                    result_df[f'{col}_geom'] = arithmetic_means
+                                    result_df[f'{col}_harm'] = arithmetic_means
+                                else:
+                                    result_df[f'{col}_geom'] = geometric_means
+                                    result_df[f'{col}_harm'] = harmonic_means
                             else:
-                                result_df[f'{dfnames[idx]}_{col}_geom'] = geometric_means # append geometric means to results df
-                                result_df[f'{dfnames[idx]}_{col}_harm'] = harmonic_means # append harmonic means to results df
+                                result_df[f'{dfnames[idx]}_{col}_arith'] = arithmetic_means # append arithmetic means to results df
+                                # 'inph' (In-phase) data can be negative, so we skip Geom/Harm means for it
+                                if 'inph' in col:
+                                    result_df[f'{dfnames[idx]}_{col}_geom'] = arithmetic_means # append in-phase arithmetic means only
+                                    result_df[f'{dfnames[idx]}_{col}_harm'] = arithmetic_means
+                                else:
+                                    result_df[f'{dfnames[idx]}_{col}_geom'] = geometric_means # append geometric means to results df
+                                    result_df[f'{dfnames[idx]}_{col}_harm'] = harmonic_means # append harmonic means to results df
         
                 else:
                     # Simple 1-to-1 nearest value mapping (no averaging needed) 
@@ -170,8 +241,11 @@ class DataMapper:
                             for i in indices:
                                 nearest_value.append(df.loc[i, col]) # define nearest values when number of neighbors not defined
                                 
-                            result_df[f'{dfnames[idx]}_{col}'] = nearest_value # append nearest values when number of neighbors not defined
-
+                            # Append nearest values when num_neighbors = 1
+                            if dfnames[idx] == '':
+                                result_df[f'{col}'] = nearest_value
+                            else:
+                                result_df[f'{dfnames[idx]}_{col}'] = nearest_value
 
         return result_df, distance_data # call complete results df and distance data
         
@@ -188,7 +262,7 @@ class DataMapper:
         for idx, df in enumerate(dataframes):
             df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
             if all(col in df.columns for col in ['x', 'y']):
-
+                
                 # KDTree built on X and Y only 
                 tree = cKDTree(df[['x', 'y']].values)
                 
@@ -199,13 +273,18 @@ class DataMapper:
                     else:
                         distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
 
-                                        
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
-                        if self.num_neighbors > 1:
+                        if self.num_neighbors != 1:
                             for dist in dists:
-                                distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'distance': dist})
+                                distance_data.append({'x': mesh_df.loc[[i], 'x'],
+                                                      'y': mesh_df.loc[[i], 'y'],
+                                                      'Z': mesh_df.loc[[i], 'Z'],
+                                                      'distance': dist})
                         else:
-                            distance_data.append({'x': mesh_df.iloc[i]['x'], 'y': mesh_df.iloc[i]['y'], 'distance': dists})
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'Z': mesh_df.loc[i, 'Z'],
+                                                  'distance': dists})
 
                             
                 elif self.ckdMethod == 'dist':
@@ -216,21 +295,22 @@ class DataMapper:
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
                                                   'y': mesh_df.loc[row_idx, 'y'],
-                                                  'Z': mesh_df.loc[row_idx, 'Z'],
                                                   'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2)
                                                                       )})
                     
-                elif self.ckdMethod == 'auto':
+                elif self.ckdMethod == 'autoNum':
                     
                     distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
                     minDist = []
-                    for dists in distances:
-                        minDist.append(min(dists))
+                    if self.num_neighbors > 1:
+                        for dists in distances:
+                            minDist.append(min(dists))
+                    else:
+                        minDist.append(distances)
                     distThresh = max(minDist)
                     
-                    indices = tree.query_ball_point(mesh_df[['x', 'y']].values, distThresh, workers=self.njobs)
-
+                    indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
                     
                     for row_idx, idxs in enumerate(indices):
                         for index in idxs:
@@ -239,9 +319,30 @@ class DataMapper:
                                                   'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
                                                                       ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2)
                                                                       )})
-
+                            
+                elif self.ckdMethod == 'autoDist':
+                    
+                    distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
+                    minDist = []
+                    if self.num_neighbors > 1:
+                        for dists in distances:
+                            minDist.append(min(dists))
+                    else:
+                        minDist.append(distances)
+                    distThresh = max(minDist)
+                    
+                    indices = tree.query_ball_point(mesh_df[['x', 'y']].values, distThresh, workers=self.njobs)
+                    
+                    for row_idx, idxs in enumerate(indices):
+                        for index in idxs:
+                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
+                                                  'y': mesh_df.loc[row_idx, 'y'],
+                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
+                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2)
+                                                                      )})
+        
                 # Statistical Aggregation (2D) 
-                if self.num_neighbors > 1:
+                if (self.num_neighbors > 1) | (self.ckdMethod != 'num'):
                 
                     for col in df.columns:
                         if col not in ['x', 'y']:
@@ -293,7 +394,7 @@ class DataMapper:
                                 result_df[f'{col}'] = nearest_value
                             else:
                                 result_df[f'{dfnames[idx]}_{col}'] = nearest_value
-                            
+                                
         return result_df, distance_data
     
     def mapXY_test(self, mesh_df, dataframes, dfnames):
@@ -401,78 +502,55 @@ class DataMapper:
         
         plt.show()
 
-    def filter_and_rename(self, eca_arth, minCut=5, maxCut=5, MaxECa=50, minECa=0, keepInphase=False):
+    def filter_and_rename(self, eca, minCut=5, maxCut=5, maxECa=50, minECa=0, keepInphase=False):
         '''
         Filters out outliers and crops the horizontal extent of the ECa data.
         Standardizes column names for specific sensor configurations (HCP/PRP).
 
         NB: Column headers require the following format, horizontal co-planar (HCP) or perpendicular (PRP), followed by the coil spacing (i.e., 1.0 or 1.1)
-        ['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']
-        ['HCP2.0', 'HCP2.0_inph', 'PRP2.1', 'PRP2.1_inph']
-        ['HCP4.0', 'HCP4.0_inph', 'PRP4.1', 'PRP4.1_inph']
+        e.g. ['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']
         '''
         # Compute xMin and xMax for the 'X' column specifically
-        xMin = eca_arth['X'].min() + minCut
-        xMax = eca_arth['X'].max() - maxCut
-        if 'HCP0.5' in eca_arth:
-            eca_arth = eca_arth[
-                (eca_arth['X'] > xMin) & (eca_arth['X'] < xMax) &
-                (eca_arth['HCP1.0'] < MaxECa) &
-                (eca_arth['PRP1.1'] < MaxECa) &
-                (eca_arth['HCP0.5'] < MaxECa) &
-                (eca_arth['PRP0.6'] < MaxECa)]
-            subs = [
-                'X', 'HCP0.5', 'PRP0.6', 
-                'HCP1.0', 'PRP1.1']
+        xMin = eca['X'].min() + minCut
+        xMax = eca['X'].max() - maxCut
+        
+        ecainphcols = eca.filter(regex='HCP|PRP|VCP').columns.tolist()  # Find columns containing coil orientations (presumably should just by quadrature and in-phase measurements)
+                        
+        ecacols = [col for col in ecainphcols if '_inph' not in col]  # Isolate quadrature columns.
+        
+        ### Will mess around with this in a later version to more robsutly isolate coil orientation and spacing
+        # if any('_' in col for col in ecacols):     
+        #     filtcols = [s.replace('_', '', 1) for s in ecainphcols]
+        #     eca.rename(columns=dict(zip(ecainphcols, filtcols)), inplace=True)
+        #     ecainphcols = eca.filter(regex='HCP|PRP|VCP').columns.tolist()
+        #     ecacols = [col for col in ecainphcols if '_inph' not in col]
             
-            eca_arth_subs = eca_arth[subs]
+        # Filter the DataFrame with corrected conditions
+        startLen = len(eca)
+        eca = eca.loc[(eca['X'] > xMin) & (eca['X'] < xMax)]
+        xFiltLen = len(eca)
+        for col in ecacols:
+            eca = eca.loc[(eca[col] > minECa) & (eca[col] < maxECa)]
+        ecaFiltLen = len(eca)
     
-            # Rename columns
-            eca_df = eca_arth_subs.rename(columns={
-                'HCP0.5': 'HCP0.5f9000h.15',
-                'PRP0.6': 'PRP0.6f9000h.15',
-                'HCP1.0': 'HCP1.0f9000h.15', 
-                'PRP1.1': 'PRP1.1f9000h.15'})
-        else:
-            # Filter the DataFrame with corrected conditions
-            eca_arth = eca_arth[
-                (eca_arth['X'] > xMin) & (eca_arth['X'] < xMax) &
-                (eca_arth['HCP1.0'] < MaxECa) &
-                (eca_arth['PRP1.1'] < MaxECa) &
-                (eca_arth['HCP2.0'] < MaxECa) &
-                (eca_arth['PRP2.1'] < MaxECa) &
-                (eca_arth['HCP4.0'] < MaxECa) &
-                (eca_arth['PRP4.1'] < MaxECa) &
-                (eca_arth['HCP1.0'] > minECa) &
-                (eca_arth['PRP1.1'] > minECa) &
-                (eca_arth['HCP2.0'] > minECa) &
-                (eca_arth['PRP2.1'] > minECa) &
-                (eca_arth['HCP4.0'] > minECa) &
-                (eca_arth['PRP4.1'] > minECa)
-                ]
-            # eca_arth['X'] = np.round(eca_arth['X'], 2)
+        # Print how many measurements are filtered using X and ECa filters.
+        print('Started with ' + str(startLen) + ' matched elements and measurements. \n' +
+              str(startLen - xFiltLen) + '(' + str((startLen - xFiltLen)/startLen) + ' %) matched points removed from spatial filtering. \n' +
+              str(xFiltLen - ecaFiltLen) + '(' + str((xFiltLen - ecaFiltLen)/ecaFiltLen) + ' %) matched points removed from ECa filtering.')
     
         # Select subset of columns
+        subs = ['X']
         if keepInphase:
-            subs = [
-                'X', 'HCP1.0', 'HCP1.0_inph',
-                'PRP1.1', 'PRP1.1_inph',
-                'PRP2.1', 'PRP2.1_inph',
-                'HCP2.0', 'HCP2.0_inph',
-                'PRP4.1', 'PRP4.1_inph',
-                'HCP4.0', 'HCP4.0_inph'
-                ]
+            for col in ecainphcols:
+                subs.append(col)
         else:
-            subs = [
-                'X', 'PRP1.1', 'PRP2.1',
-                'HCP1.0', 'PRP4.1',
-                'HCP2.0', 'HCP4.0', 
-                ]
+            for col in ecacols:
+                subs.append(col)
         
-        eca_arth_subs = eca_arth[subs]
+        eca_subs = eca[subs]
         
-        # Rename columns
-        eca_df = eca_arth_subs
+        # Isolate necessary columns
+        eca_df = eca_subs
         
         return eca_df
     

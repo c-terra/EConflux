@@ -4,14 +4,9 @@ Self-contained mapper to seed ResIPy k.mesh.df['res0'] from EMI data.
 Includes the helper `local_grid_to_utm_along_line` so no external geometry
 utilities are required.
 
-NB: Column headers require the following format, horizontal co-planar (HCP) or perpendicular (PRP), followed by the coil spacing (i.e., 1.0 or 1.1), and _inph represents the associated in-phase column.
-['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']
-['HCP2.0', 'HCP2.0_inph', 'PRP2.1', 'PRP2.1_inph'] 
-['HCP4.0', 'HCP4.0_inph', 'PRP4.1', 'PRP4.1_inph'] 
-
 Exports:
-- local_grid_to_utm_along_line
-- em2er_map
+- local & UTM grid (either via 'local_grid_to_utm_along_line' or 'direct_local_grid_to_um_along_line')
+- Informed ERI mesh (via em2er_map)
 """
 
 from typing import Tuple, Optional, Dict, Any
@@ -111,12 +106,15 @@ def direct_local_grid_to_utm_along_line(local_grid_df, coord_list, polyDeg=3, nu
 
 class em2er_map:
     """
-    Map EMI inversion values onto a ResIPy mesh and use them to set k.mesh.df['res0'] for ERI inversion.
+    Map EMI inversion values onto a mesh for ERI inversion.
 
     Parameters
     ----------
-    k : resipy.Project
-        Your ResIPy inversion project mesh and electrodes must already be defined
+    mesh : pd.DataFrame or path to .csv
+        Dataframe or .csv to file with mesh information. 
+        Must have 'X', 'Y', and 'Z' columns and a column for starting resistivity.
+    resCol : str
+        Name of column in 'mesh' that contains starting resistivity values
     elecUTM : pd.DataFrame
         Copy of electrodes from inversion project (k.elec) with UTM 'x', 'y', and 'z'
     emicsv : str
@@ -138,22 +136,33 @@ class em2er_map:
         (default: "_Linear Resistivity_arithmetic_mean", other options available in the DataMapper function).
     keep_cols : Optional[Tuple[str, str, str]]
         Coordinate column names (default: ('X','Y','Z')), optional.
+    meshobj : Optional[resipy.project]
+        ResIPy Project object. Will be used in place of 'mesh' parameter and will return informed mesh already applied to Project.
+        Your ResIPy inversion project mesh and electrodes must already be defined
     """
 
     def __init__(
         self,
-        k,
+        mesh: pd.DataFrame or str,
+        resCol: str,
         elecUTM: pd.DataFrame,
         emicsv: str,
         linearOrPoly: str,
-        alphaomega: Tuple[int, int] = (0, 12),
+        alphaomega: Tuple[int, int] = [0, 1],
         elecSpacing: float = 1,
         polydeg: int = 3,
         mapvars: Optional[Dict[str, Any]] = dict(num_neighbors=5, max_distance_xy=5, max_distance_z=0.3),
-        emires_col: str = "_Linear Resistivity_arith",
-        keep_cols: Tuple[str, str, str] = ("X", "Y", "Z")
+        emires_col: Optional[str] = "_Linear Resistivity_arith",
+        keep_cols: Optional[Tuple[str, str, str]] = ("X", "Y", "Z"),
+        meshobj: Optional = None
     ):
-        self.k = k
+        if type(mesh) == str:
+            self.mesh = pd.read_csv(mesh)
+        elif self.meshobj is not None:
+            mesh = self.meshobj.mesh.df
+        else:
+            self.mesh = mesh
+            
         self.elecUTM = elecUTM
         self.emicsv = emicsv
         self.linearOrPoly = linearOrPoly
@@ -163,6 +172,7 @@ class em2er_map:
         self.mapvars = mapvars
         self.emires_col = emires_col
         self.keep_cols = keep_cols
+        self.meshobj = meshobj
 
         self.survLen = (len(elecUTM)-1) * self.elecSpacing
 
@@ -181,13 +191,13 @@ class em2er_map:
             self.utm_pair2 = (self.elecUTM['x'].iloc[i2], self.elecUTM['y'].iloc[i2])
     
             #convert local grid points to UTM coordinates along the line
-            xyData_UTM = local_grid_to_utm_along_line(self.k.mesh.df.copy(), self.utm_pair1, self.utm_pair2)
+            xyData_UTM = local_grid_to_utm_along_line(self.mesh.copy(), self.utm_pair1, self.utm_pair2)
             
-            meshUTM = pd.concat([self.k.mesh.df.copy(), xyData_UTM], axis=1)
+            meshUTM = pd.concat([self.mesh.copy(), xyData_UTM], axis=1)
             meshUTM = meshUTM.rename(columns={'easting': 'x', 'northing': 'y'})
 
         else:
-            meshUTM = direct_local_grid_to_utm_along_line(self.k.mesh.df, self.elecUTM, self.polydeg, lineLength=self.survLen, checkLine=True)
+            meshUTM = direct_local_grid_to_utm_along_line(self.mesh, self.elecUTM, self.polydeg, lineLength=self.survLen, checkLine=True)
         #standardize coordinate naming and de-duplicate
         meshUTM = meshUTM.loc[:, ~meshUTM.columns.duplicated()]
 
@@ -223,7 +233,10 @@ class em2er_map:
             Interpolation method to pass to scipy.griddata. Either 'nearest', 'linear', or 'cubic'. Default is 'nearest'. See scipy documentation for more information.
         interpBounds: Optional[List[Tuple[float, float], Tuple[float, float]]]
             X and Z bounds, respectively, to limit interpolation range. Defaults to [(-0.25 * survey length, 1.25 x survey length), (-(survey length/4), Max mesh Z-coordinate)].
-        
+        check: Optional[bool]
+            If True, will plot an interpolated version of the informed mesh.
+        plotParams: Optional[dict]
+            Dictionary used to set 'vmin', 'vmax', and 'cmap' parameters for plot if 'check' is True.
         """
         if self.emi2mesh is None:
             return
@@ -313,12 +326,15 @@ class em2er_map:
         )
 
         #overwrite all res0 values previously in the ERI mesh
-        if 'res0' not in merged.columns:
-            merged['res0'] = pd.NA
-        merged['res0'] = merged[self.emires_col].combine_first(merged['res0'])
+        if self.resCol not in merged.columns:
+            merged[self.resCol] = pd.NA
+        merged[self.resCol] = merged[self.emires_col].combine_first(merged[self.resCol])
 
         merged = merged.drop(columns=[self.emires_col])
-        self.k.mesh.df = merged
+        if self.meshobj is not None:
+            self.meshobj.mesh.df = merged
+        else:
+            self.meshobj = merged
 
     def run(self) -> Dict[str, Any]:
         """
@@ -330,14 +346,25 @@ class em2er_map:
         self.fill_missing()
         self.merge_into_mesh()
 
-        return {
-            'utm_pair1': self.utm_pair1,
-            'utm_pair2': self.utm_pair2,
-            'meshUTM': self.meshUTM,
-            'emi_inv': self.emi_inv,
-            'emi2mesh': self.emi2mesh,
-            'dist': self.dist
-        }
+        if self.meshobj is not None:
+            return {
+                'utm_pair1': self.utm_pair1,
+                'utm_pair2': self.utm_pair2,
+                'meshUTM': self.meshUTM,
+                'emi_inv': self.emi_inv,
+                'emi2mesh': self.emi2mesh,
+                'dist': self.dist
+            }
+        else:
+            return {
+                'utm_pair1': self.utm_pair1,
+                'utm_pair2': self.utm_pair2,
+                'meshUTM': self.meshUTM,
+                'emi_inv': self.emi_inv,
+                'emi2mesh': self.emi2mesh,
+                'dist': self.dist,
+                'informedMesh': self.meshobj
+            }
 
 
 __all__ = ["local_grid_to_utm_along_line", "direct_local_grid_to_utm_along_line", "em2er_map"]
