@@ -10,6 +10,7 @@ setuptools.setup(
     author_email = "cterra413@gmail.com",
     description = "Workflows for multi-method geophysical investigations",
     url="https://github.com/c-terra/EConflux",
+    packages = setuptools.find_packages(),
     license="MIT License",
     classifiers = [
         "Development Status :: 4 - Beta",
