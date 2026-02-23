@@ -1,6 +1,6 @@
 # EConflux
 
-A library for binning and geolocation of multi-method geophysical data.
+A library for binning, geolocation, processing, and statistical analysis of multi-method geophysical data.
 
 EConflux is designed to support users conducting joint geophysical investigations by providing functions to assist with georeferencing, co-locating, processing, and interpreting complementary geophysical datasets.
 
