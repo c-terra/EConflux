@@ -12,15 +12,15 @@ setuptools.setup(
     url="https://github.com/c-terra/EConflux",
     license="MIT License",
     classifiers = [
-    	"Development Status :: 4 - Beta",
+        "Development Status :: 4 - Beta",
     	"Intended Audience :: Developers",
     	"Intended Audience :: Science/Research",
-  	"License :: OSI Approved :: MIT License",
-   	"Programming Language :: Python",
-  	"Topic :: Scientific/Engineering",
- 	"Topic :: Scientific/Engineering :: Mathematics",
-  	"Operating System :: OS Independent",
-    	"Natural Language :: English"
+  	    "License :: OSI Approved :: MIT License",
+   	    "Programming Language :: Python",
+  	    "Topic :: Scientific/Engineering",
+ 	    "Topic :: Scientific/Engineering :: Mathematics",
+  	    "Operating System :: OS Independent",
+    	"Natural Language :: English",
 ]
     python_requires = '>=3.11',
     install_requires=required,
