@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = 'econflux'
+description = "EConflux: Workflows for Multi-Method Geophysical Investigations"
+readme = 'README.txt'
+requires-python = '>=3.11'
+authors = [
+  {name = 'Chris Terra', email = 'cterra413@gmail.com'},
+]
+keywords = [
+    'geophysics', 'statistical analysis', 'spatial analysis'
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    "scikit-learn"; python_version>='3.11'",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Operating System :: OS Independent",
+    "Natural Language :: English"
+]
+dynamic = ["version"]
+
+[project.license]
+file = 'LICENSE.txt'
+
+[project.urls]
+Repository = "https://github.com/c-terra/EConflux"
+
+[project.optional-dependencies]
+examples = ['geopandas', 'resipy', 'emagpy']

@@ -7,3 +7,6 @@ seaborn
 hydrostats
 hydroeval
 pysymlog
+geopandas
+resipy
+emagpy

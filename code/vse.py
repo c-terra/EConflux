@@ -1,16 +1,11 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 import hydrostats as hs
 import hydroeval as he
 from scipy.stats import spearmanr
 from sklearn.metrics import r2_score
-import matplotlib as mpl
-import matplotlib.cm as cm
-import math
 import matplotlib.ticker
-import matplotlib.colors as clr
 import matplotlib.patheffects as pe
 import pysymlog as psl
 psl.register_mpl()
