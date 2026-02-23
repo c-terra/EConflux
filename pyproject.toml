@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Operating System :: OS Independent",
-    "Natural Language :: English"
+    "Natural Language :: English",
 ]
 dynamic = ["version"]
 
