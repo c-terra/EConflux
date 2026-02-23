@@ -21,7 +21,7 @@ setuptools.setup(
  	    "Topic :: Scientific/Engineering :: Mathematics",
   	    "Operating System :: OS Independent",
     	"Natural Language :: English",
-]
+],
     python_requires = '>=3.11',
     install_requires=required,
 )
