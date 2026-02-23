@@ -19,7 +19,8 @@ dependencies = [
     "scipy",
     "pandas",
     "matplotlib",
-    "scikit-learn"; python_version>='3.11'
+    "scikit-learn"
+    "typing-dependencies; python_version>='3.11'"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
