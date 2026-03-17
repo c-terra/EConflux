@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = 'econflux'
-version = "0.1.0"
+version = "0.1.1"
 description = "EConflux: Workflows for Multi-Method Geophysical Investigations"
 readme = 'README.txt'
 license = {file = "LICENSE.txt"}
