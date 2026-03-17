@@ -1,15 +1,21 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8"]
-build-backend = "setuptools.build_meta"
-
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = 'econflux'
+version = "0.1.0"
 description = "EConflux: Workflows for Multi-Method Geophysical Investigations"
 readme = 'README.txt'
+license = {file = "LICENSE.txt"}
 requires-python = '>=3.11'
 authors = [
   {name = 'Chris Terra', email = 'cterra413@gmail.com'},
+  {name = 'Joshua Thompson', email = 'josht32@mit.edu'},
+  {name = 'Henry Moore', email = 'hemoore@uni-bremen.de'},
+  {name = 'Raymond Hess', email = 'raymond.hess@rutgers.edu'},
+  {name = 'Donald Pesonen', email = 'dp1444@scarletmail.rutgers.edu'},
+  {name = 'Himadri Shekhar', email = 'hs1329@scarletmail.rutgers.edu'}
 ]
 keywords = [
     'geophysics', 'statistical analysis', 'spatial analysis'
@@ -33,13 +39,22 @@ classifiers = [
     "Operating System :: OS Independent",
     "Natural Language :: English",
 ]
-dynamic = ["version"]
-
-[project.license]
-file = 'LICENSE.txt'
 
 [project.urls]
+Homepage = "https://github.com/c-terra/EConflux"
 Repository = "https://github.com/c-terra/EConflux"
+Issues = "https://github.com/c-terra/EConflux/issues"
 
 [project.optional-dependencies]
 examples = ['geopandas', 'resipy', 'emagpy']
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/econflux"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "examples/",
+    "README.md",
+    "LICENSE.txt",
+]
