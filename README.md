@@ -8,21 +8,45 @@ The current version of EConflux is designed to be incorporated into workflows us
 
 ## Installing EConflux
 
-Currently, it is recommended to install EConflux by cloning the repository and adding the path to the "code" folder to your system paths.
+EConflux is available for installation on PyPI using pip or can be installeld locally by cloning the repository and perfomring a local pip install. Both options are outlined here as well as how to install just the required dependencies or the required dependencies plus optional packages needed to run the Jupyter Notebook tutorials.
 
+### Installing EConflux Using PyPI
+
+EConflux can be installed with just its required dependencies by using:
+
+```
+pip install econflux
+```
+EConflux with its required dependencies plus the additional packages that are not needed for EConflux to run but are necessary to work through the example Jupyter Notebooks can be installed by using:
+
+```
+pip install econflux[examples]
+```
+
+### Installing EConflux locally
 
 Navigate to a preferred directory:
 ```
-cd Documents
+cd \path\to\clone\location
 ```
+Clone the EConflux git repository
 ```
 git clone https://github.com/c-terra/EConflux
 ```
-See the Jupyter Notebooks in the "examples" folder to see how the EConflux classes are called.
+EConflux can then be used by adding the path to the cloned EConflux repository to your Python sys path (see how this is done in the Jupyter Notebooks in the "examples" directory), or it can be installed using PyPI locally.
+This is done by doing:
 
-NOTE: The Jupyter Notebooks in the "examples" folder might require additional packages not included in requirements.txt
+```
+cd \path\to\EConflux
+pip install .
+```
+Otherwise, EConflux, its dependencies, and the needed packages to run the Jupyter Notebook examples can be installed locally using:
+
+```
+cd \path\to\EConflux
+pip install .[examples]
+```
 
 ## Overview of EConflux Classes and Structure
 
-
-<img width="2411" height="1586" alt="image" src="https://github.com/user-attachments/assets/f195a182-4f42-4c46-a9ef-222875a13089" />
+<img width="7089" height="4438" alt="econflux_flowchart" src="https://github.com/user-attachments/assets/54ce2f9d-de86-4e2d-97d8-501528849fe4" />
