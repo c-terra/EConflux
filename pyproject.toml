@@ -6,8 +6,8 @@ build-backend = "hatchling.build"
 name = 'econflux'
 version = "0.1.1"
 description = "EConflux: Workflows for Multi-Method Geophysical Investigations"
-readme = 'README.txt'
-license = {file = "LICENSE.txt"}
+readme = 'README.md'
+license = {file = "LICENSE"}
 requires-python = '>=3.11'
 authors = [
   {name = 'Chris Terra', email = 'cterra413@gmail.com'},
@@ -56,5 +56,5 @@ include = [
     "src/",
     "examples/",
     "README.md",
-    "LICENSE.txt",
+    "LICENSE",
 ]
