@@ -1,3 +1,7 @@
-V0.1.0
+v0.1.1
+------
+-Update GitHub repo structure for easier installation
+
+v0.1.0
 -------
 -First release beta version providing resistivity to EM, EM to resistivity, and visualization/statistical analysis workflows
