@@ -1,3 +1,7 @@
+v0.1.2
+-------
+-Updated dependencies list in pyproject.toml to fix some dependencies not being included in pip install
+
 v0.1.1
 ------
 -Update GitHub repo structure for easier installation
