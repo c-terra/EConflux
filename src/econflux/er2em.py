@@ -77,13 +77,16 @@ class DataMapper:
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
                         if self.num_neighbors != 1:
                             remidxs = []
-                            if len(df) not in idxs:
-                                for j in range(len(idxs)):
-                                    if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[i, 'Z']) > self.max_distance_z:   # Remove points outside of max_distance_z
-                                        remidxs.append(j)
+                            for j in range(len(idxs)):
+                                if dists[j] == np.inf:
+                                    remidxs.append(j)
+                                elif abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[i, 'Z']) > self.max_distance_z:   # Remove points outside of max_distance_z
+                                    remidxs.append(j)
                             idxs = [val for k, val in enumerate(idxs) if k not in remidxs]
-                            dists = [val for l, val in enumerate(dists) if l not in remidxs]
+                            dists = [val for k, val in enumerate(dists) if k not in remidxs]
                             for m in range(len(idxs)):
+                                if dists[m] == np.inf:
+                                    continue
                                 distance_data.append({'x': mesh_df.loc[idxs[m], 'x'],
                                                       'y': mesh_df.loc[idxs[m], 'y'],
                                                       'Z': mesh_df.loc[idxs[m], 'Z'],
@@ -101,84 +104,74 @@ class DataMapper:
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, maxDist, workers=self.njobs)
 
                     # Calculate distances manually since query_ball_point only returns indices
-                    for row_idx, idxs in enumerate(indices):
+                    for i, idxs in enumerate(indices):
                         remidxs = []
-                        if len(df) not in idxs:
-                            for j in range(len(idxs)):
-                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:  # Remove points outside of max_distance_z
-                                    remidxs.append(j)
+                        for j in range(len(idxs)):
+                            if idxs[j] == len(df):
+                                remidxs.append(j)
+                            elif abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[i, 'Z']) > self.max_distance_z:  # Remove points outside of max_distance_z
+                                remidxs.append(j)
                         idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
-                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
-                                                  'y': mesh_df.loc[row_idx, 'y'],
-                                                  'Z': mesh_df.loc[row_idx, 'Z'],
-                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
-                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
-                                                                      ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'Z': mesh_df.loc[i, 'Z'],
+                                                  'distance': np.sqrt(((mesh_df.loc[i, 'x'] - df.loc[index, 'x'])**2) + 
+                                                                      ((mesh_df.loc[i, 'y'] - df.loc[index, 'y'])**2) +
+                                                                      ((mesh_df.loc[i, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )})
-                # Automatically determine a threshold based on nearest-neighbor distances and applies the 'num' ckdMethod.  
+                            
+                # Automatically determine distance threshold such that each mesh element is matched with num_neighbors amount of points
+                # and applies the 'num' ckdMethod.  
                 elif self.ckdMethod == 'autoNum':
 
                     # First, query k-neighbors to find how far apart points typically are
-                    distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
-                    minDist = []
-                    if self.num_neighbors > 1:
-                        for dists in distances:
-                            minDist.append(min(dists))
-                    else:
-                        minDist.append(distances)
-                    distThresh = max(minDist) # Set threshold to cover all points
+                    distances, _ = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
+                    distThresh = np.max(distances, axis=0)
 
                     # Re-query using the calculated dynamic threshold
-                    indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
+                    distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
 
                     # update indexes based on distance appendix
-                    for row_idx, idxs in enumerate(indices):
+                    for i, (dists, idxs) in enumerate(zip(distances, indices)):
                         remidxs = []
-                        if len(df) not in idxs:
-                            for j in range(len(idxs)):
-                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:  # Remove points outside of max_distance_z
-                                    remidxs.append(j)
-                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
-                        for index in idxs:
-                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
-                                                  'y': mesh_df.loc[row_idx, 'y'],
-                                                  'Z': mesh_df.loc[row_idx, 'Z'],
-                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
-                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
-                                                                      ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
-                                                                      )}) # define distance as the hypotenuse between points
+                        for j in range(len(idxs)):
+                            if dists[j] == np.inf:
+                                remidxs.append(j)
+                            elif abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[i, 'Z']) > self.max_distance_z:  # Remove points outside of max_distance_z
+                                remidxs.append(j)
+                        idxs = [val for k, val in enumerate(idxs) if k not in remidxs]
+                        dists = [val for k, val in enumerate(dists) if k not in remidxs]
+                        for m in range(len(idxs)):
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'Z': mesh_df.loc[i, 'Z'],
+                                                  'distance': dists[m]}) # define distance as the hypotenuse between points
                 
-                # Automatically determine a threshold based on nearest-neighbor distances and applies the 'dist' ckdMethod.  
+                # Automatically determine distance threshold such that each mesh element is matched with at least 1 point and applies the 'dist' ckdMethod.  
                 elif self.ckdMethod == 'autoDist':
                     
-                    distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
-                    minDist = []
-                    if self.num_neighbors > 1:
-                        for dists in distances:
-                            minDist.append(min(dists))
-                    else:
-                        minDist.append(distances)
-                    distThresh = max(minDist)
+                    distances, _ = tree.query(mesh_df[['x', 'y', 'Z']].values, k=1, workers=self.njobs)
+                    distThresh = np.max(distances, axis=0)
                     
                     # Re-query using the calculated dynamic threshold
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, distThresh, workers=self.njobs)
                     
                     # update indexes based on distance appendix
-                    for row_idx, idxs in enumerate(indices):
+                    for i, idxs in enumerate(indices):
                         remidxs = []
                         if len(df) not in idxs:
                             for j in range(len(idxs)):
-                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[row_idx, 'Z']) > self.max_distance_z:   # Remove points outside of max_distance_z
+                                if abs(df.loc[idxs[j], 'Z'] - mesh_df.loc[i, 'Z']) > self.max_distance_z:   # Remove points outside of max_distance_z
                                     remidxs.append(j)
                         idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
-                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
-                                                  'y': mesh_df.loc[row_idx, 'y'],
-                                                  'Z': mesh_df.loc[row_idx, 'Z'],
-                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
-                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2) +
-                                                                      ((mesh_df.loc[row_idx, 'Z'] - df.loc[index, 'Z'])**2)
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'Z': mesh_df.loc[i, 'Z'],
+                                                  'distance': np.sqrt(((mesh_df.loc[i, 'x'] - df.loc[index, 'x'])**2) + 
+                                                                      ((mesh_df.loc[i, 'y'] - df.loc[index, 'y'])**2) +
+                                                                      ((mesh_df.loc[i, 'Z'] - df.loc[index, 'Z'])**2)
                                                                       )})
                             
                 # Statistical aggregation
@@ -274,70 +267,83 @@ class DataMapper:
 
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
                         if self.num_neighbors != 1:
-                            for dist in dists:
-                                distance_data.append({'x': mesh_df.loc[[i], 'x'],
-                                                      'y': mesh_df.loc[[i], 'y'],
-                                                      'Z': mesh_df.loc[[i], 'Z'],
-                                                      'distance': dist})
+                            remidxs = []
+                            for j in range(len(idxs)):
+                                if dists[j] == np.inf:
+                                    remidxs.append(j)
+                            idxs = [val for k, val in enumerate(idxs) if k not in remidxs]
+                            dists = [val for l, val in enumerate(dists) if l not in remidxs]
+                            for m in range(len(idxs)):
+                                if dists[m] == np.inf:
+                                    continue
+                                distance_data.append({'x': mesh_df.loc[idxs[m], 'x'],
+                                                      'y': mesh_df.loc[idxs[m], 'y'],
+                                                      'distance': dists[m]})
                         else:
                             distance_data.append({'x': mesh_df.loc[i, 'x'],
                                                   'y': mesh_df.loc[i, 'y'],
-                                                  'Z': mesh_df.loc[i, 'Z'],
                                                   'distance': dists})
 
-                            
+                # Query all points within a fixed distance ('dist')            
                 elif self.ckdMethod == 'dist':
-                    
+                   
+                    # Returns a list of indices for ALL points within the radius (variable number of neighbors per point)
                     indices = tree.query_ball_point(mesh_df[['x', 'y']].values, self.max_distance_xy, workers=self.njobs)
-                    
-                    for row_idx, idxs in enumerate(indices):
+
+                    # Calculate distances manually since query_ball_point only returns indices
+                    for i, idxs in enumerate(indices):
+                        remidxs = []
+                        for j in range(len(idxs)):
+                            if dists[j] == np.inf:
+                                remidxs.append(j)
+                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
-                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
-                                                  'y': mesh_df.loc[row_idx, 'y'],
-                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
-                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2)
-                                                                      )})
-                    
-                elif self.ckdMethod == 'autoNum':
-                    
-                    distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
-                    minDist = []
-                    if self.num_neighbors > 1:
-                        for dists in distances:
-                            minDist.append(min(dists))
-                    else:
-                        minDist.append(distances)
-                    distThresh = max(minDist)
-                    
-                    indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
-                    
-                    for row_idx, idxs in enumerate(indices):
-                        for index in idxs:
-                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
-                                                  'y': mesh_df.loc[row_idx, 'y'],
-                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
-                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2)
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'distance': np.sqrt(((mesh_df.loc[i, 'x'] - df.loc[index, 'x'])**2) + 
+                                                                      ((mesh_df.loc[i, 'y'] - df.loc[index, 'y'])**2)
                                                                       )})
                             
+                # Automatically determine distance threshold such that each mesh element is matched with num_neighbors amount of points
+                # and applies the 'num' ckdMethod.  
+                elif self.ckdMethod == 'autoNum':
+
+                    # First, query k-neighbors to find how far apart points typically are
+                    distances, _ = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
+                    distThresh = np.max(distances, axis=0)
+
+                    # Re-query using the calculated dynamic threshold
+                    distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
+
+                    # update indexes based on distance appendix
+                    for i, (dists, idxs) in enumerate(zip(distances, indices)):
+                        remidxs = []
+                        for j in range(len(idxs)):
+                            if dists[j] == np.inf:
+                                remidxs.append(j)
+                        idxs = [val for k, val in enumerate(idxs) if k not in remidxs]
+                        dists = [val for k, val in enumerate(dists) if k not in remidxs]
+                        for m in range(len(idxs)):
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'distance': dists[m]}) # define distance as the hypotenuse between points
+                
+                # Automatically determine distance threshold such that each mesh element is matched with at least 1 point and applies the 'dist' ckdMethod.  
                 elif self.ckdMethod == 'autoDist':
                     
-                    distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
-                    minDist = []
-                    if self.num_neighbors > 1:
-                        for dists in distances:
-                            minDist.append(min(dists))
-                    else:
-                        minDist.append(distances)
-                    distThresh = max(minDist)
+                    distances, _ = tree.query(mesh_df[['x', 'y']].values, k=1, workers=self.njobs)
+                    distThresh = np.max(distances, axis=0)
                     
+                    # Re-query using the calculated dynamic threshold
                     indices = tree.query_ball_point(mesh_df[['x', 'y']].values, distThresh, workers=self.njobs)
                     
-                    for row_idx, idxs in enumerate(indices):
+                    # update indexes based on distance appendix
+                    for i, idxs in enumerate(indices):
                         for index in idxs:
-                            distance_data.append({'x': mesh_df.loc[row_idx, 'x'],
-                                                  'y': mesh_df.loc[row_idx, 'y'],
-                                                  'distance': np.sqrt(((mesh_df.loc[row_idx, 'x'] - df.loc[index, 'x'])**2) + 
-                                                                      ((mesh_df.loc[row_idx, 'y'] - df.loc[index, 'y'])**2)
+                            distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                  'y': mesh_df.loc[i, 'y'],
+                                                  'distance': np.sqrt(((mesh_df.loc[i, 'x'] - df.loc[index, 'x'])**2) + 
+                                                                      ((mesh_df.loc[i, 'y'] - df.loc[index, 'y'])**2)
                                                                       )})
         
                 # Statistical Aggregation (2D) 
@@ -395,69 +401,6 @@ class DataMapper:
                                 result_df[f'{dfnames[idx]}_{col}'] = nearest_value
                                 
         return result_df, distance_data
-    
-    def mapXY_test(self, mesh_df, dataframes, dfnames):
-        '''
-        Experimental high-speed 2D mapping method utilizing vectorization for distance tracking.
-        '''
-        mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
-        result_df = mesh_df.copy()
-        mesh_points = mesh_df[['x', 'y']].values
-        distance_data = []
-    
-        for idx, df in enumerate(dataframes):
-            df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
-            if not all(col in df.columns for col in ['x', 'y']):
-                continue
-    
-            df_points = df[['x', 'y']].values
-            tree = cKDTree(df_points)
-
-            # Vectorized query: Find neighbors for ALL mesh points at once
-            distances, indices = tree.query(mesh_points, k=self.num_neighbors)
-            
-            # Ensure 2D shape for single neighbor case
-            if self.num_neighbors == 1:
-                distances = distances[:, np.newaxis]
-                indices = indices[:, np.newaxis]
-
-            # create boolean mask for valid neighbors 
-            within_max_distance = distances <= self.max_distance_xy
-            
-            # Track distances
-            mesh_x = mesh_points[:, 0]
-            mesh_y = mesh_points[:, 1]
-            for i in range(len(mesh_points)):
-                for dist in distances[i][within_max_distance[i]]:
-                    distance_data.append({'x': mesh_x[i], 'y': mesh_y[i], 'distance': dist})
-    
-            # Compute means for each column
-            for col in df.columns:
-                if col in ['x', 'y']:
-                    continue
-    
-                df_col_values = df[col].values
-                arth_means = np.full(len(mesh_points), np.nan)
-                geom_means = np.full(len(mesh_points), np.nan)
-                harm_means = np.full(len(mesh_points), np.nan)
-    
-                for i in range(len(mesh_points)):
-                    valid_idx = indices[i][within_max_distance[i]]
-                    if valid_idx.size == 0:
-                        continue
-                    values = df_col_values[valid_idx]
-                    if values.size > 0:
-                        arth_means[i] = np.mean(values)
-                        if np.all(values > 0):
-                            geom_means[i] = gmean(values)
-                            harm_means[i] = hmean(values)
-    
-                result_df[f'{col}_arth'] = arth_means
-                result_df[f'{col}_geom'] = geom_means
-                result_df[f'{col}_harm'] = harm_means
-    
-        return result_df, distance_data
-
     
     def create_mean_dfs(self, df):
         '''
@@ -650,3 +593,367 @@ class DataMapper:
         print('After binning length EC', len(df_ec))
     
         return df_eca, df_ec
+
+    # ==========================================================
+    # ---- INTERPOLATION-CONFIDENCE DIAGNOSTICS ----------------
+    # support_field / support_by_depth / dispersion_field /
+    # loocv_interpolation / plot_confidence_section
+    # ==========================================================
+
+    def _query_neighbors(self, mesh_df, source_df, depth_col="Z"):
+        """Return cleaned mesh, cleaned source, and the (n_mesh, k) index array
+        with the cKDTree sentinel preserved. Mirrors mapXYZ's 'num' path."""
+        mesh = (mesh_df.replace([np.inf, -np.inf], np.nan)
+                       .dropna(subset=["x", "y", depth_col]).reset_index(drop=True))
+        src = (source_df.replace([np.inf, -np.inf], np.nan)
+                        .dropna(subset=["x", "y", depth_col]).reset_index(drop=True))
+
+        max_dist = np.sqrt(self.max_distance_xy ** 2 + self.max_distance_z ** 2)
+        tree = cKDTree(src[["x", "y", depth_col]].values)
+        k = max(int(self.num_neighbors), 1)
+
+        dist, idx = tree.query(mesh[["x", "y", depth_col]].values, k=k,
+                               distance_upper_bound=max_dist, workers=self.njobs)
+        if k == 1:                       # force 2D for uniform downstream handling
+            dist, idx = dist[:, None], idx[:, None]
+        return mesh, src, dist, idx
+
+    @staticmethod
+    def _keep_valid(neigh_row, mesh_z_i, src_z, n_src, max_dz):
+        """Drop the cKDTree sentinel and enforce the anisotropic Z tolerance,
+        exactly as mapXYZ does when it removes points beyond max_distance_z."""
+        j = neigh_row[neigh_row != n_src]
+        if j.size:
+            j = j[np.abs(src_z[j] - mesh_z_i) <= max_dz]
+        return j
+
+    # ================================================================== #
+    # 1) SPATIAL SUPPORT  (distance field + n_eff + fill fraction)
+    # ================================================================== #
+    def support_field(self, mesh_df, source_df, depth_col="Z", keep_cols=None,
+                      group_col=None):
+        """One row per mesh element describing how well the source data support
+        the interpolated value there.
+
+        Columns: x, y, Z, nn_dist (3D), nn_dist_xy, nn_dist_z, n_eff, supported.
+        A cell with supported == False received no real neighbor and is handled
+        by fill_missing (mean / value / griddata), i.e. it is extrapolated, not
+        interpolated. Sets self.fill_fraction = share of such cells.
+        """
+        mesh, src, _, idx = self._query_neighbors(mesh_df, source_df, depth_col)
+        mesh_xyz = mesh[["x", "y", depth_col]].values
+        src_xyz = src[["x", "y", depth_col]].values
+        src_z = src_xyz[:, 2]
+        n_src = len(src)
+        src_grp = (src[group_col].values
+                   if (group_col is not None and group_col in src.columns) else None)
+        nsnd = []
+
+        rows = []
+        for i in range(len(mesh)):
+            j = self._keep_valid(idx[i], mesh_xyz[i, 2], src_z, n_src,
+                                 self.max_distance_z)                 # <<< drop-in
+            n_eff = int(j.size)                                       # <<< drop-in
+            if n_eff:
+                d3 = np.sqrt(((src_xyz[j] - mesh_xyz[i]) ** 2).sum(axis=1))
+                m = d3.argmin()
+                nn_dist = float(d3[m])
+                nn_xy = float(np.hypot(src_xyz[j[m], 0] - mesh_xyz[i, 0],
+                                       src_xyz[j[m], 1] - mesh_xyz[i, 1]))
+                nn_z = float(abs(src_xyz[j[m], 2] - mesh_xyz[i, 2]))
+            else:
+                nn_dist = nn_xy = nn_z = np.nan
+            if src_grp is not None:
+                nsnd.append(int(np.unique(src_grp[j]).size) if n_eff else 0)
+            rows.append((mesh_xyz[i, 0], mesh_xyz[i, 1], mesh_xyz[i, 2],
+                         nn_dist, nn_xy, nn_z, n_eff, n_eff > 0))
+
+        sup = pd.DataFrame(rows, columns=["x", "y", depth_col, "nn_dist",
+                                          "nn_dist_xy", "nn_dist_z", "n_eff",
+                                          "supported"])
+        if src_grp is not None:
+            sup["n_soundings"] = nsnd
+        if keep_cols:
+            for _c in keep_cols:
+                if _c in mesh.columns:
+                    sup[_c] = mesh[_c].values
+        self.fill_fraction = float(1.0 - sup["supported"].mean())
+        return sup
+
+    def support_by_depth(self, support_df, depth_col="Z", nbins=12):
+        """Depth-resolved roll-up of support_field(): the panel that explains
+        where (with depth) interpolation confidence collapses, and would flag
+        a non-informative pairing (e.g. the Virginia EM2ER null result) before
+        any inversion is run."""
+        s = support_df.copy()
+        s["depth_bin"] = pd.cut(s[depth_col], bins=nbins)
+        return (s.groupby("depth_bin", observed=True)
+                 .agg(n_cells=("supported", "size"),
+                      frac_supported=("supported", "mean"),
+                      median_nn_dist=("nn_dist", "median"),
+                      median_nn_dist_z=("nn_dist_z", "median"),
+                      mean_n_eff=("n_eff", "mean"))
+                 .reset_index())
+
+    # ================================================================== #
+    # 2) LOCAL DISPERSION  (log std + geometric CV + 3-means divergence)
+    # ================================================================== #
+    def dispersion_field(self, mesh_df, source_df, value_cols=None,
+                         depth_col="Z", skip_substr="inph", keep_cols=None,
+                         group_col=None):
+        """Per-cell spread of the neighbor set, for each mapped variable.
+
+        For each value column it adds:
+          {col}_logstd  : std of log10(neighbors)  (ratio-space spread)
+          {col}_gcv     : geometric coefficient of variation
+          {col}_meandiv : (arith - harm) / geom, the divergence among the three
+                          means mapXYZ already computes (0 if neighbors equal;
+                          grows with skew / heterogeneity).
+        Columns containing `skip_substr` (e.g. in-phase, which can be negative)
+        are skipped for the log/geom-based measures. Meaningful only for
+        num_neighbors > 1.
+        """
+        mesh, src, _, idx = self._query_neighbors(mesh_df, source_df, depth_col)
+        if value_cols is None:
+            value_cols = [c for c in src.columns if c not in ("x", "y", depth_col)]
+        src_z = src[depth_col].values
+        n_src = len(src)
+        mesh_z = mesh[depth_col].values
+        src_grp = (src[group_col].values
+                   if (group_col is not None and group_col in src.columns) else None)
+
+        res = mesh[["x", "y", depth_col]].copy()
+        for col in value_cols:
+            if skip_substr and skip_substr in col:
+                continue
+            vals = src[col].values
+            logstd = np.full(len(mesh), np.nan)
+            gcv = np.full(len(mesh), np.nan)
+            meandiv = np.full(len(mesh), np.nan)
+            between = np.full(len(mesh), np.nan)   # lateral spread across soundings
+            within = np.full(len(mesh), np.nan)    # vertical spread within a sounding
+            for i in range(len(mesh)):
+                j = self._keep_valid(idx[i], mesh_z[i], src_z, n_src,
+                                     self.max_distance_z)
+                vr = vals[j]
+                gr = src_grp[j] if src_grp is not None else None
+                fin = np.isfinite(vr)
+                vr = vr[fin]
+                if gr is not None:
+                    gr = gr[fin]
+                posm = vr > 0                       # log / geom need positives
+                vp = vr[posm]
+                gp = gr[posm] if gr is not None else None
+                if vp.size >= 2:
+                    s_ln = np.log(vp).std(ddof=1)
+                    logstd[i] = np.log10(vp).std(ddof=1)
+                    gcv[i] = np.sqrt(np.expm1(s_ln ** 2))
+                    a, g, h = vp.mean(), gmean(vp), hmean(vp)
+                    meandiv[i] = (a - h) / g if g > 0 else np.nan
+                    if gp is not None:
+                        lv = np.log10(vp)
+                        means, varis = [], []
+                        for gid in np.unique(gp):
+                            sel = gp == gid
+                            means.append(lv[sel].mean())
+                            if sel.sum() >= 2:
+                                varis.append(lv[sel].var(ddof=1))
+                        means = np.asarray(means)
+                        between[i] = float(means.std(ddof=1)) if means.size >= 2 else 0.0
+                        within[i] = float(np.sqrt(np.mean(varis))) if varis else 0.0
+            res[f"{col}_logstd"] = logstd
+            res[f"{col}_gcv"] = gcv
+            res[f"{col}_meandiv"] = meandiv
+            if src_grp is not None:
+                res[f"{col}_between"] = between
+                res[f"{col}_within"] = within
+        if keep_cols:
+            for _c in keep_cols:
+                if _c in mesh.columns:
+                    res[_c] = mesh[_c].values
+        return res
+
+    # ================================================================== #
+    # 3) LEAVE-ONE-OUT CROSS-VALIDATION of the interpolation
+    # ================================================================== #
+    def loocv_interpolation(self, source_df, value_col, mean="arith",
+                            depth_col="Z", keep_cols=None, group_col=None):
+        """Cross-validate the interpolation in log10 space.
+
+        group_col=None -> leave-one-POINT-out: each point is held out and
+        predicted from its k nearest other points. group_col set (e.g. a
+        sounding / borehole id) -> leave-one-SOUNDING-out: every point of a
+        group is withheld together and predicted only from OTHER groups. Use
+        the grouped form whenever the source points are not mutually
+        independent -- e.g. a per-sounding 1D inversion, where points sharing a
+        column come from one inverted model and point-wise LOOCV would be
+        over-optimistic (a held-out point is "predicted" mostly by its own
+        sounding).
+
+        Returns
+        -------
+        residuals : DataFrame [x, y, Z, observed, predicted, resid_log10
+                    (+ group_col and keep_cols when supplied)]
+        summary   : dict (RMSE_log, MAE_log, bias_log, median_ratio, counts,
+                    cv_mode; n_groups and per_group_RMSE_log when grouped)
+        """
+        subset = ["x", "y", depth_col, value_col]
+        if group_col is not None:
+            subset = subset + [group_col]
+        src = (source_df.replace([np.inf, -np.inf], np.nan)
+                        .dropna(subset=subset).reset_index(drop=True))
+        src = src[src[value_col] > 0].reset_index(drop=True)   # log needs > 0
+        xyz = src[["x", "y", depth_col]].values
+        v = src[value_col].values
+        n = len(src)
+        k = max(int(self.num_neighbors), 1)
+        max_dist = np.sqrt(self.max_distance_xy ** 2 + self.max_distance_z ** 2)
+        reducer = {"arith": np.mean, "geom": gmean, "harm": hmean}[mean]
+
+        def _predict(j, xyz_in, v_in, z0):
+            if j.size:
+                j = j[np.abs(xyz_in[j, 2] - z0) <= self.max_distance_z]
+            if not j.size:
+                return np.nan
+            vals = v_in[j]
+            return reducer(vals) if (mean == "arith" or np.all(vals > 0)) else np.mean(vals)
+
+        pred = np.full(n, np.nan)
+        if group_col is None:
+            tree = cKDTree(xyz)
+            _, idx = tree.query(xyz, k=k + 1, distance_upper_bound=max_dist,
+                                workers=self.njobs)        # k+1 so self can be dropped
+            if k + 1 == 1:
+                idx = idx[:, None]
+            for i in range(n):
+                j = idx[i]
+                j = j[(j != i) & (j != n)]                 # drop self + sentinel
+                pred[i] = _predict(j, xyz, v, xyz[i, 2])
+        else:
+            groups = src[group_col].values
+            for g in np.unique(groups):                    # leave one sounding out
+                hold = np.where(groups == g)[0]
+                keep = groups != g
+                if not keep.any():
+                    continue
+                xyz_in, v_in = xyz[keep], v[keep]
+                tree_g = cKDTree(xyz_in)
+                _, ii = tree_g.query(xyz[hold], k=k,
+                                     distance_upper_bound=max_dist, workers=self.njobs)
+                if k == 1:
+                    ii = ii[:, None]
+                nin = len(xyz_in)
+                for row, hi in enumerate(hold):
+                    j = ii[row]
+                    j = j[j != nin]                        # drop sentinel
+                    pred[hi] = _predict(j, xyz_in, v_in, xyz[hi, 2])
+
+        ok = np.isfinite(pred)
+        resid = np.log10(pred[ok]) - np.log10(v[ok])
+        residuals = pd.DataFrame({
+            "x": xyz[ok, 0], "y": xyz[ok, 1], depth_col: xyz[ok, 2],
+            "observed": v[ok], "predicted": pred[ok], "resid_log10": resid})
+        if group_col is not None:
+            residuals[group_col] = src[group_col].values[ok]
+        if keep_cols:
+            for _c in keep_cols:
+                if _c in src.columns and _c not in residuals.columns:
+                    residuals[_c] = src[_c].values[ok]
+
+        if resid.size:
+            rmse = float(np.sqrt(np.mean(resid ** 2))); mae = float(np.mean(np.abs(resid)))
+            bias = float(np.mean(resid)); medr = float(10 ** np.median(resid))
+        else:
+            rmse = mae = bias = medr = float("nan")
+        summary = {
+            "n_used": int(ok.sum()),
+            "n_unpredicted": int((~ok).sum()),
+            "RMSE_log": rmse, "MAE_log": mae,
+            "bias_log": bias,                  # +ve => interpolation over-predicts
+            "median_ratio": medr,
+            "cv_mode": "leave-one-sounding-out" if group_col is not None else "leave-one-point-out",
+        }
+        if group_col is not None and resid.size:
+            grp = residuals.groupby(group_col)["resid_log10"]
+            summary["n_groups"] = int(grp.ngroups)
+            summary["per_group_RMSE_log"] = grp.apply(
+                lambda s: float(np.sqrt(np.mean(s.values ** 2)))).to_dict()
+        return residuals, summary
+
+    # ================================================================== #
+    # shared plotting helper (x-Z section) -- callable from VSE
+    # ================================================================== #
+    @staticmethod
+    def plot_confidence_section(df, value, depth_col="Z", x_col="x",
+                                title=None, cmap="viridis", log_color=False,
+                                center=None, value_space=None, clabel=None,
+                                xlim=None, figname=None, ax=None,
+                                **scatter_kw):
+        """Scatter any per-cell confidence field on a length-vs-depth section.
+
+        center : float or None
+            If given (e.g. 0.0 for signed LOOCV residuals), use a diverging
+            TwoSlopeNorm centred on this value with symmetric limits so that
+            `center` renders white. Overrides log_color and defaults cmap to
+            'coolwarm'.
+        xlim : tuple or None
+            Shared x-axis limits (e.g. the mesh X range) so multiple sections
+            line up exactly.
+        """
+        from matplotlib.colors import LogNorm, TwoSlopeNorm
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 4))
+        c = np.asarray(df[value].values, dtype=float)
+        ctr = center
+        if value_space == "ratio":          # show a log10 residual in linear (ratio) form
+            c = np.power(10.0, c)
+            if ctr is not None:
+                ctr = 10.0 ** ctr
+
+        if ctr is not None:
+            lim = np.nanpercentile(np.abs(c - ctr), 98)
+            lim = lim if (np.isfinite(lim) and lim > 0) else (abs(ctr) or 1.0)
+            vmin, vmax = ctr - lim, ctr + lim
+            if value_space == "ratio":
+                vmin = max(vmin, 1e-9)      # ratios are strictly positive
+            norm = TwoSlopeNorm(vcenter=ctr, vmin=vmin, vmax=vmax)
+            if cmap == "viridis":
+                cmap = "coolwarm"
+        elif log_color:
+            pos = c[c > 0]
+            norm = LogNorm(vmin=np.nanmin(pos), vmax=np.nanmax(c)) if pos.size else None
+        else:
+            norm = None
+
+        sc = ax.scatter(df[x_col], df[depth_col], c=c, cmap=cmap, norm=norm,
+                        s=scatter_kw.pop("s", 12), **scatter_kw)
+        cb = plt.colorbar(sc, ax=ax, shrink=0.85)
+        cb.set_label(clabel or value)
+        ax.set_xlabel("Length (m)")
+        ax.set_ylabel("Depth (m)")
+        if xlim is not None:
+            ax.set_xlim(*xlim)
+        ax.set_title(title or value)
+        plt.tight_layout()
+        if figname:
+            plt.savefig(figname, dpi=300)
+        return ax
+
+    @staticmethod
+    def doi_filter(source_df, doi_col, depth_col="Z", depth_positive_down=False):
+        """Drop source points deeper than their depth-of-investigation (DOI).
+
+        Each 1D EMI sounding is only constrained above its DOI; deeper layers
+        are unconstrained model space and should not seed or validate the
+        colocation. `doi_col` holds the DOI as a positive depth magnitude (m).
+        With depth_positive_down=False (default; Z increases upward, negative
+        down) a point is kept when Z >= -DOI. Rows with non-finite DOI are kept.
+        """
+        df = source_df.copy()
+        doi = np.abs(df[doi_col].values.astype(float))
+        z = df[depth_col].values.astype(float)
+        if depth_positive_down:
+            keep = ~np.isfinite(doi) | (z <= doi)
+        else:
+            keep = ~np.isfinite(doi) | (z >= -doi)
+        return df[keep].reset_index(drop=True)

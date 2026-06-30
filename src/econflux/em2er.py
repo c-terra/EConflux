@@ -17,6 +17,8 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from scipy.interpolate import griddata
 from math import ceil, floor
+from econflux.er2em import DataMapper
+import matplotlib.tri as tri
 
 def local_grid_to_utm_along_line(mesh_df: pd.DataFrame,
                                  utm_pair1: Tuple[float, float],
@@ -156,13 +158,9 @@ class em2er_map:
         keep_cols: Optional[Tuple[str, str, str]] = ("X", "Y", "Z"),
         meshobj: Optional = None
     ):
-        if type(mesh) == str:
-            self.mesh = pd.read_csv(mesh)
-        elif self.meshobj is not None:
-            mesh = self.meshobj.mesh.df
-        else:
-            self.mesh = mesh
             
+        self.mesh = mesh
+        self.resCol = resCol
         self.elecUTM = elecUTM
         self.emicsv = emicsv
         self.linearOrPoly = linearOrPoly
@@ -173,6 +171,13 @@ class em2er_map:
         self.emires_col = emires_col
         self.keep_cols = keep_cols
         self.meshobj = meshobj
+
+        if type(mesh) == str:
+            self.mesh = pd.read_csv(mesh)
+        elif self.meshobj is not None:
+            mesh = self.meshobj.mesh.df
+        else:
+            self.mesh = mesh
 
         self.survLen = (len(elecUTM)-1) * self.elecSpacing
 
@@ -212,99 +217,213 @@ class em2er_map:
         self.emi_inv = emi_inv
 
     def map_to_mesh(self):
-        #import testcalib function, needs to be available outside this script
-        from er2em import DataMapper
-
-	#map EMI data to ERI mesh using select parameters
-        mapper = DataMapper(**self.mapvars) 
+        	#map EMI data to ERI mesh using select parameters
+        mapper = DataMapper(**self.mapvars)
+        self.mapper = mapper 
         emi2mesh, dist = mapper.mapXYZ(self.meshUTM, [self.emi_inv], [''])
         self.emi2mesh = emi2mesh.copy()
         self.dist = dist
 
-    def fill_missing(self, fillstrat='mean', res0fill=None, interpMeth='nearest', interpBounds=None, check=False, plotParams={'vmin': None, 'vmax': None, 'cmap': 'viridis'}):
-        
+    def fill_missing(self, fillstrat='mean', res0fill=None, interpMeth='nearest',
+                     interpBounds=None, area_col=None, region_col=None,
+                     foreground_region=None, background='nearest',
+                     check=False, plotParams={'vmin': None, 'vmax': None, 'cmap': 'viridis'}):
         """
-        fillstrat : {"mean","value","interp", "none"}
-            How to fill NaNs after mapping. "mean" fills each column with its column mean.
-            "value" uses `res0fill`. "interpolate" uses scipy.griddata to fill using spatial interpolation, passing 'interpMeth' to griddata. "none" leaves NaNs.
-        res0fill : Optional[float] #fill with a particular value
+        Fill mesh elements that received no mapped EMI value, producing a
+        complete res0 starting model. Works on structured or unstructured
+        (triangular) meshes -- everything operates on element centroids.
+
+        fillstrat : {"mean","value","interp","none"}
+            "mean"   fills each data column with its mean (area-weighted if
+                     `area_col` is given).
+            "value"  fills with `res0fill`.
+            "interp" interpolates at the empty element centroids with
+                     scipy.griddata(method=`interpMeth`); any cell still empty
+                     (outside the data hull for 'linear'/'cubic', in a
+                     background region, or outside `interpBounds`) is then
+                     filled according to `background`.
+            "none"   leaves NaNs.
+        res0fill : Optional[float]
             Value for fillstrat="value".
         interpMeth : Optional[str]
-            Interpolation method to pass to scipy.griddata. Either 'nearest', 'linear', or 'cubic'. Default is 'nearest'. See scipy documentation for more information.
-        interpBounds: Optional[List[Tuple[float, float], Tuple[float, float]]]
-            X and Z bounds, respectively, to limit interpolation range. Defaults to [(-0.25 * survey length, 1.25 x survey length), (-(survey length/4), Max mesh Z-coordinate)].
-        check: Optional[bool]
-            If True, will plot an interpolated version of the informed mesh.
-        plotParams: Optional[dict]
-            Dictionary used to set 'vmin', 'vmax', and 'cmap' parameters for plot if 'check' is True.
+            Method passed to scipy.griddata: 'nearest', 'linear', or 'cubic'.
+        interpBounds : Optional[[(xmin,xmax),(zmin,zmax)]]
+            If given, only cells inside these bounds are interpolated and the
+            rest are handled by `background`. If None, defaults to interpolating
+            10% on either side of the ERI survey and down to 1/3 the survey length.
+        area_col : Optional[str]
+            Per-element area/volume column used to area-weight the 'mean' fill
+            and the 'mean'/'median' backgrounds. For ResIPy this is 'Area' (2D)
+            or 'Volume' (3D), present only after calling k.mesh.cellArea().
+            prep_mesh_utm() keeps only coordinates, so the column is re-attached
+            here from self.mesh by centroid. Default None (unweighted, OFF).
+        region_col : Optional[str]
+            Region/marker column enabling region-aware filling: only foreground
+            cells are interpolated, while other (background / padding) cells get
+            `background`. For ResIPy this is 'region'. Default None (OFF -- every
+            empty cell is interpolated).
+        foreground_region : Optional[value or list]
+            Marker value(s) of the foreground. If None and `region_col` is set,
+            auto-detected as the region holding the most mapped values.
+        background : float | {"nearest","mean","median"}
+            How to fill cells not assigned by interpolation. A float sets a
+            constant resistivity; 'nearest' takes the nearest mapped value;
+            'mean'/'median' use a homogeneous summary of the mapped values
+            (area-weighted if `area_col`). Default 'nearest'.
+        check : Optional[bool]
+            If True, scatter-plot the filled mesh centroids for inspection.
+        plotParams : Optional[dict]
+            'vmin','vmax','cmap' for the check plot.
         """
         if self.emi2mesh is None:
-            return
+            raise ValueError('EMI models have not been mapped to ERI mesh. Run map_to_mesh() function first.')
         df = self.emi2mesh.copy()
 
+        # prep_mesh_utm() trims the mesh to coordinates, so re-attach any
+        # requested area/region column from self.mesh by element centroid.
+        _added = []
+        for extra in (area_col, region_col):
+            if extra and extra not in df.columns:
+                src = getattr(self, 'mesh', None)
+                if (src is not None and extra in src.columns
+                        and all(c in src.columns for c in ['X', 'Y', 'Z'])):
+                    df = df.merge(
+                        src[['X', 'Y', 'Z', extra]].drop_duplicates(['X', 'Y', 'Z']),
+                        on=['X', 'Y', 'Z'], how='left')
+                    _added.append(extra)
+                else:
+                    print(f"fill_missing: column '{extra}' not found in mesh; "
+                          f"that option is disabled.")
+
         cols_to_exclude = set(self.keep_cols)
+        for extra in (area_col, region_col):
+            if extra:
+                cols_to_exclude.add(extra)
         data_cols = [c for c in df.columns if c not in cols_to_exclude]
 
-        if fillstrat == "mean":         # Fill res0 data columns with arithmetic mean
+        def _aw(kn):                       # area weights for a boolean mask
+            if area_col and area_col in df.columns:
+                return np.abs(df.loc[kn, area_col].values.astype(float))
+            return np.ones(int(kn.sum()))
+
+        if fillstrat == "mean":            # homogeneous (optionally area-weighted) fill
             for col in data_cols:
                 if pd.api.types.is_numeric_dtype(df[col]):
-                    df[col] = df[col].fillna(df[col].mean())
-        elif fillstrat == "value":         # Fill res0 data columns with user-defined value
+                    kn = df[col].notna()
+                    if kn.any():
+                        df[col] = df[col].fillna(
+                            self._wmean(df.loc[kn, col].values, _aw(kn)))
+
+        elif fillstrat == "value":         # user-defined constant
             df[data_cols] = df[data_cols].fillna(res0fill)
-        elif fillstrat == 'interp':         # Interpolate values in to fill in emires_col using scipy.griddata
-            from matplotlib import colors
-            
-            interpBounds = [(0 - (self.survLen*0.25), self.survLen*1.25), (-(self.survLen/4), self.emi2mesh['Z'].max())]
-            
-            if plotParams['vmin'] is None:
-                plotParams['vmin'] = ceil(df[self.emires_col].min())
-            if plotParams['vmax'] is None:
-                plotParams['vmax'] = floor(df[self.emires_col].max())
-            
-            grid_x = np.linspace(interpBounds[0][0], interpBounds[0][1], 1000)
-            grid_z = -np.geomspace(abs(interpBounds[1][1]), abs(interpBounds[1][0]), 200)
-            
-            Xgrid, Zgrid = np.meshgrid(grid_x, grid_z)
-            grid_values = griddata((df['X'], df['Z']), df[self.emires_col], (Xgrid, Zgrid), method=interpMeth)
-            gridValDf = pd.DataFrame(grid_values, index = grid_z, columns = grid_x)
-            
-            survNan = df.loc[(df['X'] >= grid_x[0]) & (df['X'] <= grid_x[-1]) & (df['Z'] <= grid_z[0]) & (df['Z'] >= grid_z[-1]) & (df[self.emires_col].isnull())]
-            
+
+        elif fillstrat == 'interp':        # direct-centroid interpolation + background tier
+            # foreground selection (default: all cells)
+            if region_col is not None and region_col in df.columns:
+                if foreground_region is None:
+                    kn_all = df[self.emires_col].notna()
+                    fg = ([df.loc[kn_all, region_col].value_counts().idxmax()]
+                          if kn_all.any() else list(df[region_col].dropna().unique()))
+                else:
+                    fg = (list(foreground_region)
+                          if isinstance(foreground_region, (list, tuple, set))
+                          else [foreground_region])
+                in_fg = df[region_col].isin(fg)
+            else:
+                in_fg = pd.Series(True, index=df.index)
+
+            in_bounds = pd.Series(True, index=df.index)
+            if interpBounds is None:
+                in_bounds = [(0 - (self.survLen*0.1), self.survLen*1.1), (-(self.survLen/3), self.emi2mesh['Z'].max())]
+            else:
+                (x0, x1), (z0, z1) = interpBounds
+                in_bounds = ((df['X'] >= x0) & (df['X'] <= x1)
+                             & (df['Z'] >= min(z0, z1)) & (df['Z'] <= max(z0, z1)))
+
+            for col in data_cols:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    continue
+                kn = df[col].notna()
+                if not kn.any():
+                    continue
+                known_xz = df.loc[kn, ['X', 'Z']].values
+                known_v = df.loc[kn, col].values.astype(float)
+
+                # (1) interpolate directly at the empty foreground centroids
+                tgt = (~kn) & in_fg & in_bounds
+                if tgt.any():
+                    df.loc[tgt, col] = griddata(known_xz, known_v,
+                                                df.loc[tgt, ['X', 'Z']].values,
+                                                method=interpMeth)
+
+                # (2) fill anything still empty (out-of-hull / background / out-of-bounds)
+                still = df[col].isna()
+                if still.any():
+                    if isinstance(background, (int, float)) and not isinstance(background, bool):
+                        df.loc[still, col] = float(background)
+                    elif background == 'nearest':
+                        df.loc[still, col] = griddata(known_xz, known_v,
+                                                      df.loc[still, ['X', 'Z']].values,
+                                                      method='nearest')
+                    else:                  # 'mean' / 'median' homogeneous background
+                        df.loc[still, col] = self._summary(known_v, _aw(kn), background)
+
             if check:
-                fig, ax = plt.subplots(layout='constrained')
-                
-                mesh = ax.pcolormesh(Xgrid, Zgrid, grid_values, norm=colors.LogNorm(vmin=plotParams['vmin'], vmax=plotParams['vmax']), cmap=plotParams['cmap'])
-                
-                cbar = plt.colorbar(mesh, ax=ax, location='bottom', shrink=0.75, aspect=25, extend='both')
-                cbar.set_label(self.emires_col)
-                cbTicks = np.geomspace(plotParams['vmin'], plotParams['vmax'], 5)
-                cbar.set_ticks(cbTicks)
-                cbLabels = [str(round(t, 2)) for t in cbTicks] # Format as strings
-                cbar.set_ticklabels(cbLabels)
-                cbar.ax.tick_params(which='minor', labelbottom=False) 
+                self._plot_interp_fill(df, plotParams)
 
-                ax.set_title('Interpolated Mesh')
-                ax.set_xlabel('Length (m)')
-                ax.set_ylabel('Depth (m)')
-
-                plt.show()
-            
-            for index, row in survNan.iterrows():
-                xs = abs((grid_x - row['X']))
-                zs = abs((grid_z - row['Z']))
-                xi = np.where(xs == xs.min())[0][0]
-                zi = np.where(zs == zs.min())[0][0]
-                
-                df.loc[index, self.emires_col] = gridValDf.loc[grid_z[zi], grid_x[xi]]
-            
-            df[self.emires_col] = df[self.emires_col].fillna(df[self.emires_col].mean())
-            
         elif fillstrat == "none":
             pass
         else:
-            raise ValueError(f"Unknown fillstrat: {self.fillstrat}")
+            raise ValueError(f"Unknown fillstrat: {fillstrat}")
 
+        if _added:
+            df = df.drop(columns=[c for c in _added if c in df.columns])
         self.emi2mesh = df
+
+    # --- fill helpers ------------------------------------------------------
+    @staticmethod
+    def _wmean(vals, w):
+        vals = np.asarray(vals, dtype=float); w = np.asarray(w, dtype=float)
+        if vals.size == 0:
+            return np.nan
+        if not (np.isfinite(w).all() and w.sum() > 0):
+            w = np.ones_like(vals)
+        return float(np.sum(w * vals) / np.sum(w))
+
+    @staticmethod
+    def _wmedian(vals, w):
+        vals = np.asarray(vals, dtype=float); w = np.asarray(w, dtype=float)
+        if vals.size == 0:
+            return np.nan
+        if not (np.isfinite(w).all() and w.sum() > 0):
+            w = np.ones_like(vals)
+        o = np.argsort(vals); v, wv = vals[o], w[o]
+        return float(v[np.searchsorted(np.cumsum(wv), 0.5 * wv.sum())])
+
+    @classmethod
+    def _summary(cls, vals, w, how):
+        return cls._wmean(vals, w) if how == "mean" else cls._wmedian(vals, w)
+
+    def _plot_interp_fill(self, df, plotParams):
+        from matplotlib import colors
+        col = self.emires_col
+        pos = df.loc[df[col] > 0, col]
+        vmin = plotParams.get('vmin'); vmax = plotParams.get('vmax')
+        if vmin is None:
+            vmin = float(np.nanmin(pos)) if len(pos) else 1.0
+        if vmax is None:
+            vmax = float(np.nanmax(df[col]))
+        fig, ax = plt.subplots(layout='constrained')
+        sc = ax.scatter(df['X'], df['Z'], c=df[col],
+                        norm=colors.LogNorm(vmin=vmin, vmax=vmax),
+                        cmap=plotParams.get('cmap', 'viridis'), s=8)
+        cbar = plt.colorbar(sc, ax=ax, location='bottom', shrink=0.75,
+                            aspect=25, extend='both')
+        cbar.set_label(col)
+        ax.set_title('Interpolated / filled mesh')
+        ax.set_xlabel('Length (m)')
+        ax.set_ylabel('Depth (m)')
+        plt.show()
 
     def merge_into_mesh(self):
         if self.emi2mesh is None:
@@ -319,7 +438,7 @@ class em2er_map:
 	
 	#merge EMI values onto the ERI mesh
         merged = pd.merge(
-            self.k.mesh.df,
+            self.mesh,
             self.emi2mesh[needed_cols],
             on=list(self.keep_cols),
             how='left'
@@ -365,6 +484,88 @@ class em2er_map:
                 'dist': self.dist,
                 'informedMesh': self.meshobj
             }
+
+
+    def confidence(self, value_col, depth_bins=12, loocv_mean="arith",
+                   x_col="X", group_col=None, doi_col=None,
+                   resid_space="ratio", plot=False, xlim=None):
+        """Interpolation-confidence diagnostics for the EMI->mesh mapping.
+
+        Must be called after map_to_mesh()/run() so self.mapper, self.meshUTM
+        and self.emi_inv are populated. `value_col` is a column in the EMI data
+        being mapped (self.emi_inv) -- a raw channel / linear-resistivity
+        column, NOT a *_arith output.
+
+        Section plots use the local along-line coordinate `x_col` (default 'X',
+        carried from the ERT mesh). The EMI source points have no native local
+        coordinate, so for the LOOCV panel each source point is assigned the
+        `x_col` of its nearest mesh node, putting all three panels on one
+        consistent axis. Falls back to UTM 'x' if `x_col` is absent from the
+        mesh. Returns (and stores on self.confidence_results) a dict with keys:
+        support, support_by_depth, dispersion, loocv_residuals, loocv_summary,
+        fill_fraction.
+        """
+        if getattr(self, "mapper", None) is None:
+            raise RuntimeError("Run map_to_mesh() (or run()) before confidence().")
+
+        mapper, mesh, source = self.mapper, self.meshUTM, self.emi_inv
+        if doi_col is not None and doi_col in source.columns:
+            source = mapper.doi_filter(source, doi_col, depth_col="Z")
+        use_local = x_col in mesh.columns
+        keep = [x_col] if use_local else None
+
+        # give EMI source points a local along-line coordinate by borrowing the
+        # nearest mesh node's x_col, so the residual panel shares the axis
+        source_x = source
+        if use_local:
+            mtree = cKDTree(mesh[["x", "y"]].values)
+            _, mi = mtree.query(source[["x", "y"]].values, k=1)
+            source_x = source.copy()
+            source_x[x_col] = mesh[x_col].values[mi]
+
+        sup = mapper.support_field(mesh, source, keep_cols=keep, group_col=group_col)
+        depth_summary = mapper.support_by_depth(sup, nbins=depth_bins)
+        disp = mapper.dispersion_field(mesh, source, value_cols=[value_col],
+                                       keep_cols=keep, group_col=group_col)
+        resid, loocv = mapper.loocv_interpolation(source_x, value_col,
+                                                  mean=loocv_mean, keep_cols=keep,
+                                                  group_col=group_col)
+
+        results = {
+            "support": sup,
+            "support_by_depth": depth_summary,
+            "dispersion": disp,
+            "loocv_residuals": resid,
+            "loocv_summary": loocv,
+            "fill_fraction": float(getattr(mapper, "fill_fraction", np.nan)),
+        }
+        self.confidence_results = results
+
+        if plot:
+            xc = x_col if use_local else "x"
+            if xlim is None:
+                xlim = (float(mesh[x_col].min()), float(mesh[x_col].max())) if use_local else None
+            mapper.plot_confidence_section(sup[sup["supported"]], "nn_dist",
+                                           x_col=xc, xlim=xlim,
+                                           title="Spatial support (NN distance)")
+            gcv = value_col + "_gcv"
+            if gcv in disp.columns and np.isfinite(disp[gcv]).any():
+                mapper.plot_confidence_section(disp, gcv, x_col=xc, xlim=xlim,
+                                               title="Local dispersion (" + gcv + ")")
+            rlabel = "pred / obs" if resid_space == "ratio" else r"residual $\log_{10}$"
+            rtitle = "LOOCV residuals (pred/obs)" if resid_space == "ratio" else "LOOCV residuals"
+            mapper.plot_confidence_section(resid, "resid_log10", x_col=xc,
+                                           xlim=xlim, center=0.0,
+                                           value_space=resid_space, clabel=rlabel,
+                                           title=rtitle)
+
+        print("EM2ER interpolation-confidence summary")
+        print("  fill fraction: {:.1%}".format(results["fill_fraction"]))
+        print("  LOOCV log10 RMSE/MAE/bias: {:.3f} / {:.3f} / {:+.3f}".format(
+            loocv["RMSE_log"], loocv["MAE_log"], loocv["bias_log"]))
+        print("  linear factors  RMSE/MAE/bias: x{:.2f} / x{:.2f} / x{:.2f}".format(
+            10 ** loocv["RMSE_log"], 10 ** loocv["MAE_log"], 10 ** loocv["bias_log"]))
+        return results
 
 
 __all__ = ["local_grid_to_utm_along_line", "direct_local_grid_to_utm_along_line", "em2er_map"]
