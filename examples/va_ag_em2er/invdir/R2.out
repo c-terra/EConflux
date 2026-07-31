@@ -2,7 +2,7 @@
 
  >> R  2    R e s i s t i v i t y   I n v e r s i o n   v4.10 <<
 
- >> D a t e : 29 - 06 - 2026
+ >> D a t e : 01 - 07 - 2026
  >> My beautiful survey                                                             
  >> I n v e r s e   S o l u t i o n   S e l e c t e d <<
  >> Reading start resistivity from res0.dat                      
@@ -59,11 +59,11 @@
 
                      Timing Summary
                      ==============
-     Total time taken:                               227. s
+     Total time taken:                               195. s
      Percent time taken forming element equations:    0.2 %
-     Percent time taken solving forward  equations:  19.8 %
+     Percent time taken solving forward  equations:  19.9 %
      Percent time taken forming Jacobian:             0.7 %
-     Percent time taken solving inverse equations:   69.1 %
+     Percent time taken solving inverse equations:   69.2 %
      Percent time taken calculating res. matrix:      0.0 %
 
                      Timing Details
@@ -73,8 +73,8 @@
      Number of calls to solve forward equations:    13104
      Average time taken in call:                      0.0 s
      Number of calls to form Jacobian:                  2
-     Average time taken in call:                      0.8 s
+     Average time taken in call:                      0.7 s
      Number of calls to solve inverse equations:       12
-     Average time taken in call:                     13.1 s
+     Average time taken in call:                     11.2 s
      Number of calls to calculate res. matrix:          1
      Average time taken in call:                      0.0 s
