@@ -1,3 +1,10 @@
+v0.1.3
+-------
+-Fixed errors with 'num' ckdMethod in DataMapper
+-Added spatial interpolation confidence report functions in DataMapper and linked functions in EM2ER and VSE to these functions
+-Added ground-truth comparison plots to VSE
+-Updated Jupyter Notebooks and input files for all four examples
+
 v0.1.2
 -------
 -Updated dependencies list in pyproject.toml to fix some dependencies not being included in pip install
