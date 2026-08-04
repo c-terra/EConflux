@@ -119,7 +119,7 @@ class em2er_map:
         Name of column in 'mesh' that contains starting resistivity values
     elecUTM : pd.DataFrame
         Copy of electrodes from inversion project (k.elec) with UTM 'x', 'y', and 'z'
-    emicsv : str
+    emi : str
         Path to the EMI .csv (X, Y, Depth, Linear Resistivity columns present)
     linearOrPoly : str
         Define whether to use a linear or polynomial interpolation to convert UTM to local coordintes
@@ -148,7 +148,7 @@ class em2er_map:
         mesh: pd.DataFrame or str,
         resCol: str,
         elecUTM: pd.DataFrame,
-        emicsv: str,
+        emi: pd.DataFrame or str,
         linearOrPoly: str,
         alphaomega: Tuple[int, int] = [0, 1],
         elecSpacing: float = 1,
@@ -162,7 +162,7 @@ class em2er_map:
         self.mesh = mesh
         self.resCol = resCol
         self.elecUTM = elecUTM
-        self.emicsv = emicsv
+        self.emi = emi
         self.linearOrPoly = linearOrPoly
         self.alphaomega = alphaomega
         self.elecSpacing = elecSpacing
@@ -211,16 +211,20 @@ class em2er_map:
         self.meshUTM = meshUTM
 
     def load_emi(self): #load EMI csv
-        emi_inv = pd.read_csv(self.emicsv)
+        if type(self.emi) == str:
+            emi_inv = pd.read_csv(self.emi)
+        else:
+            emi_inv = self.emi.copy()
         #match column names expected by mapping function
         emi_inv = emi_inv.rename(columns={'X': 'x', 'Y': 'y', 'Depth': 'Z'})
         self.emi_inv = emi_inv
 
-    def map_to_mesh(self):
+    def map_to_mesh(self, correctTopo='auto', topoTol=None, surfacePts=12):
         	#map EMI data to ERI mesh using select parameters
         mapper = DataMapper(**self.mapvars)
         self.mapper = mapper 
-        emi2mesh, dist = mapper.mapXYZ(self.meshUTM, [self.emi_inv], [''])
+        emi2mesh, dist = mapper.mapXYZ(self.meshUTM, [self.emi_inv], [''], topo_correct=correctTopo,
+                                       topo_tol=topoTol, surf_k=surfacePts)
         self.emi2mesh = emi2mesh.copy()
         self.dist = dist
 
@@ -334,7 +338,9 @@ class em2er_map:
 
             in_bounds = pd.Series(True, index=df.index)
             if interpBounds is None:
-                in_bounds = [(0 - (self.survLen*0.1), self.survLen*1.1), (-(self.survLen/3), self.emi2mesh['Z'].max())]
+                x0, x1, z0, z1 = 0 - (self.survLen*0.1), self.survLen*1.1, -(self.survLen/3), self.emi2mesh['Z'].max()
+                in_bounds = ((df['X'] >= x0) & (df['X'] <= x1)
+                             & (df['Z'] >= min(z0, z1)) & (df['Z'] <= max(z0, z1)))
             else:
                 (x0, x1), (z0, z1) = interpBounds
                 in_bounds = ((df['X'] >= x0) & (df['X'] <= x1)
@@ -369,7 +375,7 @@ class em2er_map:
                         df.loc[still, col] = self._summary(known_v, _aw(kn), background)
 
             if check:
-                self._plot_interp_fill(df, plotParams)
+                self._plot_interp_fill(df, plotParams, xlim=[x0, x1], zlim=[z0, z1])
 
         elif fillstrat == "none":
             pass
@@ -404,7 +410,7 @@ class em2er_map:
     def _summary(cls, vals, w, how):
         return cls._wmean(vals, w) if how == "mean" else cls._wmedian(vals, w)
 
-    def _plot_interp_fill(self, df, plotParams):
+    def _plot_interp_fill(self, df, plotParams, xlim=None, zlim=None):
         from matplotlib import colors
         col = self.emires_col
         pos = df.loc[df[col] > 0, col]
@@ -421,6 +427,8 @@ class em2er_map:
                             aspect=25, extend='both')
         cbar.set_label(col)
         ax.set_title('Interpolated / filled mesh')
+        ax.set_xlim(xlim)
+        ax.set_ylim(zlim)
         ax.set_xlabel('Length (m)')
         ax.set_ylabel('Depth (m)')
         plt.show()
@@ -487,8 +495,9 @@ class em2er_map:
 
 
     def confidence(self, value_col, depth_bins=12, loocv_mean="arith",
-                   x_col="X", group_col=None, doi_col=None,
-                   resid_space="ratio", plot=False, xlim=None):
+                   x_col="X", group_col=None, doi_col=None, line_coord=None,
+                   resid_space="ratio", plot=False, xlim=None, ax=None,
+                   savefig=False, figpath=None, plotDepth=False):
         """Interpolation-confidence diagnostics for the EMI->mesh mapping.
 
         Must be called after map_to_mesh()/run() so self.mapper, self.meshUTM
@@ -511,17 +520,30 @@ class em2er_map:
         mapper, mesh, source = self.mapper, self.meshUTM, self.emi_inv
         if doi_col is not None and doi_col in source.columns:
             source = mapper.doi_filter(source, doi_col, depth_col="Z")
-        use_local = x_col in mesh.columns
-        keep = [x_col] if use_local else None
+        if line_coord is not None:
+            # Put BOTH mesh and source on a global along-line coordinate (e.g.
+            # the fitted-line projection used for the final 2-D sections),
+            # instead of the per-survey ResIPy mesh 'X' (which is a local,
+            # laterally padded frame). The source keeps its OWN coordinate -- the
+            # whole survey line -- rather than borrowing a single mesh's X, so
+            # the residual panel spans the full line, not one mesh's footprint.
+            mesh = mesh.copy();   mesh[x_col]   = np.asarray(line_coord(mesh), dtype=float)
+            source = source.copy(); source[x_col] = np.asarray(line_coord(source), dtype=float)
+            use_local = True
+            keep = [x_col]
+            source_x = source
+        else:
+            use_local = x_col in mesh.columns
+            keep = [x_col] if use_local else None
 
-        # give EMI source points a local along-line coordinate by borrowing the
-        # nearest mesh node's x_col, so the residual panel shares the axis
-        source_x = source
-        if use_local:
-            mtree = cKDTree(mesh[["x", "y"]].values)
-            _, mi = mtree.query(source[["x", "y"]].values, k=1)
-            source_x = source.copy()
-            source_x[x_col] = mesh[x_col].values[mi]
+            # give EMI source points a local along-line coordinate by borrowing the
+            # nearest mesh node's x_col, so the residual panel shares the axis
+            source_x = source
+            if use_local:
+                mtree = cKDTree(mesh[["x", "y"]].values)
+                _, mi = mtree.query(source[["x", "y"]].values, k=1)
+                source_x = source.copy()
+                source_x[x_col] = mesh[x_col].values[mi]
 
         sup = mapper.support_field(mesh, source, keep_cols=keep, group_col=group_col)
         depth_summary = mapper.support_by_depth(sup, nbins=depth_bins)
@@ -544,20 +566,58 @@ class em2er_map:
         if plot:
             xc = x_col if use_local else "x"
             if xlim is None:
-                xlim = (float(mesh[x_col].min()), float(mesh[x_col].max())) if use_local else None
-            mapper.plot_confidence_section(sup[sup["supported"]], "nn_dist",
-                                           x_col=xc, xlim=xlim,
-                                           title="Spatial support (NN distance)")
+                if line_coord is not None:
+                    allx = np.concatenate([np.asarray(mesh[x_col].values, float),
+                                           np.asarray(source[x_col].values, float)])
+                    xlim = (float(np.nanmin(allx)), float(np.nanmax(allx)))
+                elif use_local:
+                    xlim = (float(mesh[x_col].min()), float(mesh[x_col].max()))
+                else:
+                    xlim = None
             gcv = value_col + "_gcv"
-            if gcv in disp.columns and np.isfinite(disp[gcv]).any():
-                mapper.plot_confidence_section(disp, gcv, x_col=xc, xlim=xlim,
-                                               title="Local dispersion (" + gcv + ")")
             rlabel = "pred / obs" if resid_space == "ratio" else r"residual $\log_{10}$"
-            rtitle = "LOOCV residuals (pred/obs)" if resid_space == "ratio" else "LOOCV residuals"
-            mapper.plot_confidence_section(resid, "resid_log10", x_col=xc,
-                                           xlim=xlim, center=0.0,
-                                           value_space=resid_space, clabel=rlabel,
-                                           title=rtitle)
+            rtitle = "LOOCV residuals (pred/obs)" if resid_space == "ratio" else "LOOCV residuals"    
+            
+            if figpath is not None:
+                nnfigname = figpath + 'nnDistance.png'
+                gcvfigname = figpath + 'gcv.png'
+                loocvfigname = figpath + 'loocv.png'
+            else:
+                nnfigname = None
+                gcvfigname = None
+                loocvfigname = None
+            
+            if ax is not None:
+                if len(ax) == 3:
+                    mapper.plot_confidence_section(sup[sup["supported"]], "nn_dist",
+                                                   x_col=xc, xlim=xlim,
+                                                   title="Spatial support (NN distance)", ax=ax[0],
+                                                   figname=nnfigname, plotDepth=plotDepth)
+                    if gcv in disp.columns and np.isfinite(disp[gcv]).any():
+                        mapper.plot_confidence_section(disp, gcv, x_col=xc, xlim=xlim,
+                                                       title="Local dispersion (" + gcv + ")",
+                                                       ax=ax[1], figname=gcvfigname, plotDepth=plotDepth)
+        
+                    mapper.plot_confidence_section(resid, "resid_log10", x_col=xc,
+                                                   xlim=xlim, center=0.0,
+                                                   value_space=resid_space, clabel=rlabel,
+                                                   title=rtitle, ax=ax[2], figname=loocvfigname,
+                                                   plotDepth=plotDepth)
+            else:
+                mapper.plot_confidence_section(sup[sup["supported"]], "nn_dist",
+                                               x_col=xc, xlim=xlim,
+                                               title="Spatial support (NN distance)", figname=nnfigname,
+                                               plotDepth=plotDepth)
+                if gcv in disp.columns and np.isfinite(disp[gcv]).any():
+                    mapper.plot_confidence_section(disp, gcv, x_col=xc, xlim=xlim,
+                                                   title="Local dispersion (" + gcv + ")", figname=gcvfigname,
+                                                   plotDepth=plotDepth)
+    
+                mapper.plot_confidence_section(resid, "resid_log10", x_col=xc,
+                                               xlim=xlim, center=0.0,
+                                               value_space=resid_space, clabel=rlabel,
+                                               title=rtitle, figname=loocvfigname,
+                                               plotDepth=plotDepth)
 
         print("EM2ER interpolation-confidence summary")
         print("  fill fraction: {:.1%}".format(results["fill_fraction"]))
@@ -566,6 +626,7 @@ class em2er_map:
         print("  linear factors  RMSE/MAE/bias: x{:.2f} / x{:.2f} / x{:.2f}".format(
             10 ** loocv["RMSE_log"], 10 ** loocv["MAE_log"], 10 ** loocv["bias_log"]))
         return results
+
 
 
 __all__ = ["local_grid_to_utm_along_line", "direct_local_grid_to_utm_along_line", "em2er_map"]

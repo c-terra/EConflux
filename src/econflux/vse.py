@@ -7,12 +7,37 @@ from scipy.stats import spearmanr, gmean
 from sklearn.metrics import r2_score
 import matplotlib.ticker
 import matplotlib.patheffects as pe
-from matplotlib.colors import TwoSlopeNorm
+from matplotlib.colors import TwoSlopeNorm, Colormap, Normalize
 import pysymlog as psl
 psl.register_mpl()
 
 plt.rcParams['font.size'] = 14
-plt.rcParams['font.family'] = 'arial'
+plt.rcParams['font.family'] = 'serif'
+
+def is_divergent(cmap) -> bool:
+    """Returns True if the colormap is divergent, otherwise False."""
+    # List of official Matplotlib divergent colormap base names
+    diverging_names = {
+        'piyg', 'prgn', 'brbg', 'puor', 'rdgy', 
+        'rdylbu', 'rdylgn', 'rdbu', 'coolwarm', 
+        'bwr', 'seismic', 'twilight', 'twilight_shifted'
+    }
+
+    # Extract string name if a Colormap object is passed
+    if isinstance(cmap, Colormap):
+        cmap_name = cmap.name.lower()
+    elif isinstance(cmap, str):
+        cmap_name = cmap.lower()
+    else:
+        raise TypeError("Input must be a string or a matplotlib Colormap object.")
+    
+    # Strip the '_r' suffix if the colormap is reversed
+    if cmap_name.endswith('_r'):
+        cmap_name = cmap_name[:-2]
+                
+    is_div = (cmap_name in diverging_names) | ('div' in cmap_name)
+        
+    return is_div
 
 class EConfluxStats:
     '''
@@ -54,19 +79,22 @@ class EConfluxStats:
             for col in drop_flag_col:
                 if col in self.data.columns:
                     self.data = self.data.drop(self.data.index[self.data[col] == 1])
-        else:
+        elif type(drop_flag_col) == str:
             self.data = self.data.dropna(subset=[informingCol, rawCol, informedCol], ignore_index=True)
 
             if drop_flag_col in self.data.columns:
                 self.data = self.data.drop(self.data.index[self.data[drop_flag_col] == 1])
 
-        if drop_flag_col == 'nan':
+        else:
             self.data = self.data.dropna(subset=[informingCol, rawCol, informedCol], ignore_index=True)
 
+        self.data = self.data.loc[(self.data[informingCol] > 0) & (self.data[rawCol] > 0) & (self.data[informedCol] > 0)]
+        self.data.reset_index(drop=True, inplace=True)
+
         # Defining core variables
-        self.X = self.data[informingCol].loc[self.data[informingCol] > 0]  # Inversion result from reference method
-        self.y = self.data[rawCol].loc[self.data[rawCol] > 0]        # Inversion result from raw uninformed data
-        self.Y = self.data[informedCol].loc[self.data[informedCol] > 0]    # Inversion result of informed data (incorporating the reference method)
+        self.X = self.data[informingCol]  # Inversion result from reference method
+        self.y = self.data[rawCol]      # Inversion result from raw uninformed data
+        self.Y = self.data[informedCol]   # Inversion result of informed data (incorporating the reference method)
 
         # Defining log-transformed variables
         self.Xlog = np.log10(self.X)
@@ -116,13 +144,19 @@ class EConfluxStats:
             'fontsize': fontkwDict['axislabelsize'],
             'fontweight': fontkwDict['axislabelweight'],
             }
+        
+        # axis tick label font
+        self.axisTickFontKws = {
+            'labelsize': fontkwDict['axisticksize']
+            }
+        
         # colorbar title font
         self.cbarTitleKws = {
             'fontsize': fontkwDict['cbartitlesize'],
             'fontweight': fontkwDict['cbartitleweight']}
         # colorbar tick font
         self.cbarTickKws = {
-            'fontsize': fontkwDict['cbarticklabelsize'],
+            'labelsize': fontkwDict['cbarticklabelsize'],
             }
 
 
@@ -152,8 +186,8 @@ class EConfluxStats:
         '''
         
         sim, obs = np.asarray(sim, float), np.asarray(obs, float)
-        # mask = np.isfinite(sim) & np.isfinite(obs)
-        # sim, obs = sim[mask], obs[mask]
+        mask = np.isfinite(sim) & np.isfinite(obs)
+        sim, obs = sim[mask], obs[mask]
         if sim.size == 0:
             raise ValueError("No valid data")
 
@@ -183,8 +217,10 @@ class EConfluxStats:
         
         if logOrlin == 'log':
             infSim, rawSim, obs = self.Ylog, self.ylog, self.Xlog
+            self.log = True
         else:
             infSim, rawSim, obs = self.Y, self.y, self.X
+            self.log = False
             
         if decompKGE:
             alphaInf, betaInf, rInf, kgeInf = self.KGEnp(infSim, obs, decomp=True)
@@ -236,11 +272,10 @@ class EConfluxStats:
 
         coeffs = np.polyfit(X_log, Y_log, 1)
         p = np.poly1d(coeffs)
-        pred_y = p(X_log)
 
         a = 10**coeffs[1]
         b = coeffs[0]
-        r2 = r2_score(X_log.values.reshape(-1, 1), pred_y.reshape(-1, 1))
+        r2 = r2_score(Y_log.values, X_log.values)
 
         return a, b, r2, p
 
@@ -262,9 +297,15 @@ class EConfluxStats:
         # Fit power-law models (raw + informed)
         if log:
             a_nc, b_nc, r2_nc, _ = self._powerlaw_fit(self.X, self.y)
-            a_cal, b_cal, r2_cal, _ = self._powerlaw_fit(self.X, self.Y)            
+            a_cal, b_cal, r2_cal, _ = self._powerlaw_fit(self.X, self.Y)   
+        else:
+            coeffs_nc = np.polyfit(self.X, self.y, 1)
+            a_nc, b_nc, r2_nc = coeffs_nc[1], coeffs_nc[0], r2_score(self.y.values, self.X.values)
+            
+            coeffs_c = np.polyfit(self.X, self.Y, 1)
+            a_cal, b_cal, r2_cal = coeffs_c[1], coeffs_c[0], r2_score(self.Y.values, self.X.values)
     
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(constrained_layout=True)
     
         if (self.informingMethod is not None) & (self.informedMethod is not None):
             if grayscale:
@@ -278,10 +319,15 @@ class EConfluxStats:
             ax.scatter(self.X, self.y, c='dodgerblue', label="EC$_{raw}$", alpha=0.6)
             ax.scatter(self.X, self.Y, c='goldenrod', label="EC$_{informed}$", alpha=0.6)
     
-        # Power-law fits (log10-transformed for consistency)
-        x_fit = np.logspace(np.log10(self.X.min()), np.log10(self.X.max()), 200)
-        y_fit_nc = a_nc * x_fit ** b_nc
-        y_fit_cal = a_cal * x_fit ** b_cal
+        if log:
+            # Power-law fits (log10-transformed for consistency)
+            x_fit = np.logspace(np.log10(self.X.min()), np.log10(self.X.max()), 200)
+            y_fit_nc = a_nc * x_fit ** b_nc
+            y_fit_cal = a_cal * x_fit ** b_cal
+        else:
+            x_fit = np.linspace(self.X.min(), self.X.max(), 200)
+            y_fit_nc = a_nc + (x_fit * b_nc)
+            y_fit_cal = a_cal + (x_fit * b_cal)
     
         if grayscale:
             ax.plot(x_fit, y_fit_nc, c="dimgray", lw=4, alpha=0.8, path_effects=[pe.Stroke(linewidth=5, foreground='k'), pe.Normal()],
@@ -297,10 +343,10 @@ class EConfluxStats:
 
         ax.axline((0, 0), slope=1, color="k", linestyle="--", lw=3)
 
-        ax.legend(fontsize=11, frameon=False)
         ax.set_title("Raw–Informed Scatter Comparison with Power-Law Fits", **self.titleFontKws)
-        ax.set_xscale('log')
-        ax.set_yscale('log')
+        if log:
+            ax.set_xscale('log')
+            ax.set_yscale('log')
         
         if (self.ticks is not None) & (self.informingMethod is not None) & (self.informedMethod is not None):
             ax.set_xlabel(f"{self.informingMethod} EC ({self.units})", **self.labelFontKws) 
@@ -326,8 +372,11 @@ class EConfluxStats:
             plt.gca().xaxis.set_major_formatter(formatter)
             plt.gca().yaxis.set_major_formatter(formatter)
 
+
+        leg = ax.legend(fontsize=self.axisTickFontKws.get('fontsize', 8), loc='best', framealpha=0.75)
+        for handle in leg.legend_handles:
+            handle.set_alpha(1.0)
         
-        plt.tight_layout()
         if figname is not None:
             plt.savefig(figname, dpi=300)
         else:
@@ -339,7 +388,7 @@ class EConfluxStats:
             "Informed Fit": {"a": a_cal, "b": b_cal, "R²": r2_cal}
         }
 
-    def kde_histograms(self, nbins=100, figname=None):
+    def kde_histograms(self, nbins=100, ylims=None, figname=None):
        '''
        Compare EC distributions using log-spaced histograms.
 
@@ -370,12 +419,19 @@ class EConfluxStats:
            
        ax[0].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
        ax[0].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
-        
-       ax[0].text(0.05, 0.95,
-                  f"RMSE: {hs.rmse(self.y, self.X):.2f}\n"
-                  f"PBIAS: {he.evaluator(he.pbias, self.y, self.X)[0]:.2f}\n"
-                  f"KGE_np: {self.KGEnp(self.y, self.X):.2f}",
-                  transform=ax[0].transAxes, va="top", fontsize=9)
+       
+       if self.log:
+           ax[0].text(0.05, 0.95,
+                      f"RMSE: {hs.rmse(self.ylog, self.Xlog):.2f}\n"
+                      f"PBIAS: {he.evaluator(he.pbias, self.ylog, self.Xlog)[0]:.2f}\n"
+                      f"KGE_np: {self.KGEnp(self.ylog, self.Xlog):.2f}",
+                      transform=ax[0].transAxes, va="top", fontsize=9)
+       else:
+           ax[0].text(0.05, 0.95,
+                      f"RMSE: {hs.rmse(self.y, self.X):.2f}\n"
+                      f"PBIAS: {he.evaluator(he.pbias, self.y, self.X)[0]:.2f}\n"
+                      f"KGE_np: {self.KGEnp(self.y, self.X):.2f}",
+                      transform=ax[0].transAxes, va="top", fontsize=9)
         
        ax[0].set_title(f"KDE Histogram (Raw {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
        ax[0].set_ylabel('Probability Density', **self.labelFontKws)
@@ -396,14 +452,24 @@ class EConfluxStats:
            
        ax[1].get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
        ax[1].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, pos: str(float(x))))
-        
-       ax[1].text(0.05, 0.95,
-                  f"RMSE: {hs.rmse(self.Y, self.X):.2f}\n"
-                  f"PBIAS: {he.evaluator(he.pbias, self.Y, self.X)[0]:.2f}\n"
-                  f"KGE_np: {self.KGEnp(self.Y, self.X):.2f}",
-                  transform=ax[1].transAxes, va="top", fontsize=9)
+       
+       if self.log:
+           ax[1].text(0.05, 0.95,
+                      f"RMSE: {hs.rmse(self.Ylog, self.Xlog):.2f}\n"
+                      f"PBIAS: {he.evaluator(he.pbias, self.Ylog, self.Xlog)[0]:.2f}\n"
+                      f"KGE_np: {self.KGEnp(self.Ylog, self.Xlog):.2f}",
+                      transform=ax[1].transAxes, va="top", fontsize=9)
+       else:
+           ax[1].text(0.05, 0.95,
+                      f"RMSE: {hs.rmse(self.Y, self.X):.2f}\n"
+                      f"PBIAS: {he.evaluator(he.pbias, self.Y, self.X)[0]:.2f}\n"
+                      f"KGE_np: {self.KGEnp(self.Y, self.X):.2f}",
+                      transform=ax[1].transAxes, va="top", fontsize=9)
         
        ax[1].set_title(f"KDE Histogram (Informed {self.informedMethod} vs. {self.informingMethod}) ({nbins} bins)", **self.titleFontKws)
+    
+       if ylims is not None:
+           ax[0].set_ylim(ylims[0], ylims[1])
     
        plt.tight_layout()
        if figname is not None:
@@ -453,7 +519,7 @@ class EConfluxStats:
 
     def bland_altman(self, sim, obs, 
                      nonparam=False, title=None, ax=None, marker='+', markersize=None,
-                     ymin=None, ymax=None, xmin=None, xmax=None, figname=None, xticks=None, logList=None,
+                     ymin=None, ymax=None, xmin=None, xmax=None, savefig=False, figname=None, xticks=None, logList=None,
                      legendParams={'plot': True, 'loc': 'best'},
                      linekwargs={'color': 'orangered', 'linestyle': ['-', '--'], 'label': ['Mean Difference', 'Upper Agreement Limit', 'Lower Agreement Limit']}, **kwargs):
         '''
@@ -484,8 +550,10 @@ class EConfluxStats:
             Minimum value to use for the x-axis (Mean of sim and obs values)
         xmax: Optional[float]
             Maximum value to use for the x-axis (Mean of sim and obs values)     
+        savefig: Optional[bool]
+            If True, will save Bland-Altman plot to current directory or path specified in figname
         figname: Optional[str]
-            Name to use for saving the plot to a .png
+            Name (or path and name) to use for saving the plot to a .png
         xticks: Optional[list]
             List of numbers to set for x-axis ticks
         logList: A list where the first entry determines whether to use a log-scale for the x-axis (0 or False for linear, 1 or True for log)
@@ -543,7 +611,7 @@ class EConfluxStats:
         ax.axhline(upper, linestyle=loalinestyle, label=upperlinelabel, **linekwargs)
         ax.axhline(lower, linestyle=loalinestyle, label=lowerlinelabel, **linekwargs)
         if legendParams['plot']:
-            leg = ax.legend(loc=legendParams['loc'], fontsize=plt.rcParams['font.size']-3)
+            leg = ax.legend(loc=legendParams['loc'], fontsize=self.axisTickFontKws.get('labelsize', 6), framealpha=0.75)
             for lh in leg.legend_handles:
                 lh.set_alpha(1)
 
@@ -574,10 +642,11 @@ class EConfluxStats:
             formatter = matplotlib.ticker.StrMethodFormatter("{x:1g}")
             plt.gca().yaxis.set_major_formatter(formatter)
 
-        if figname is not None:
-            plt.savefig(figname, dpi=300)
-        else:
-            plt.savefig('bland_altman.png', dpi=300)
+        if savefig:
+            if figname is not None:
+                plt.savefig(figname, dpi=300)
+            else:
+                plt.savefig('bland_altman.png', dpi=300)
         
         if nonparam:
             return print('\nMedian Difference: ' + str(round(mid, 3)) + ' ' + self.units + '\n' + 
@@ -675,12 +744,17 @@ class EConfluxStats:
         ax_sup.set_title(f"Spatial support (fill fraction = {fill_fraction:.1%})",
                          **self.titleFontKws)
 
-        # (b) local dispersion: geometric CV of the neighbor set
+        # (b) local dispersion: geometric CV (robust color limits so a few
+        #     extreme-dispersion cells don't flatten the whole panel)
         if have_disp:
             d = disp[np.isfinite(disp[gcv_col])]
-            sc = ax_disp.scatter(d[mesh_x_col], d[depth_col], c=d[gcv_col],
-                                 cmap=cmap_disp, s=14)
-            fig.colorbar(sc, ax=ax_disp, shrink=0.85).set_label("geometric CV")
+            gv = d[gcv_col].values
+            lo, hi = np.nanpercentile(gv, (2, 98))
+            if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+                lo, hi = np.nanmin(gv), np.nanmax(gv)
+            sc = ax_disp.scatter(d[mesh_x_col], d[depth_col], c=gv,
+                                 cmap=cmap_disp, s=14, vmin=lo, vmax=hi)
+            fig.colorbar(sc, ax=ax_disp, shrink=0.85, extend="both").set_label("geometric CV")
             ax_disp.set_title(f"Local dispersion of {value_col}", **self.titleFontKws)
         else:
             ax_disp.text(0.5, 0.5, "dispersion needs\nnum_neighbors > 1",
@@ -772,7 +846,8 @@ class EConfluxStats:
                            coord_cols=("x", "y", "Z"), k=8, radius=None,
                            agg="geom", weight="distance", weight_power=1.0,
                            weight_col=None, dev_space="ratio", plot=True,
-                           plot_x_col="X", cmap="viridis", figname=None):
+                           plot_x_col="X", cmap="viridis", devCmap='coolwarm',
+                           units=None, figname=None, cbticks=None, diffticks=None):
         """Compare point ground-truth measurements (groundwater / surface water
         / soil) against the informed inversion result.
 
@@ -866,13 +941,26 @@ class EConfluxStats:
             print("  median model/observed ratio: {:.3f}".format(float(10 ** np.median(d))))
 
         if plot:
-            self._plot_ground_truth(md, mval, model_col, result, coord_cols,
-                                    plot_x_col, cmap, figname, dev_space=dev_space)
+            if any(word in model_col for word in ['inf', 'informed', 'Inf', 'Informed']):
+                self._plot_ground_truth(md, mval, model_col, result, coord_cols,
+                                        plot_x_col, cmap, devCmap, figname, dev_space=dev_space, rawOrInf='inf', units=units, cbticks=cbticks, diffticks=diffticks)
+            else:
+                self._plot_ground_truth(md, mval, model_col, result, coord_cols,
+                                        plot_x_col, cmap, devCmap, figname, dev_space=dev_space, rawOrInf='raw', units=units, cbticks=cbticks, diffticks=diffticks)
         return result
 
     def _plot_ground_truth(self, md, mval, model_col, result, coord_cols,
-                           plot_x_col, cmap, figname, dev_space="ratio"):
+                           plot_x_col, cmap, devCmap, figname, dev_space="ratio",
+                           rawOrInf='inf', units=None, cbticks=None, diffticks=None):
+        
         """Section overlay + signed-deviation map for ground_truth_check()."""
+        u = units if units is not None else getattr(self, "units", None)
+        if 'S/m' in u:
+            metric = 'Conductivity'
+        elif 'Ohm.m' in u:
+            metric = 'Resistivity'
+        else:
+            metric = None
         from matplotlib.colors import LogNorm, TwoSlopeNorm
         from scipy.spatial import cKDTree
         depth_col = coord_cols[-1]
@@ -891,38 +979,86 @@ class EConfluxStats:
             gx = result[lat_cols[0]].values
         gz = result[depth_col].values
 
-        pos = mval[mval > 0]
-        norm = LogNorm(vmin=np.nanmin(pos), vmax=np.nanmax(mval))
+        if max(gz) < 0:
+            md[depth_col] *= -1
+            gz *= -1
+            depthOrElev = 'Depth'
+        else:
+            depthOrElev = 'Elevation'
+
+        if cbticks is not None:
+            norm = LogNorm(vmin=cbticks[0], vmax=cbticks[-1])
+        else:
+            pos = mval[mval > 0]
+            norm = LogNorm(vmin=np.nanmin(pos), vmax=np.nanmax(mval))
         fig, (a1, a2) = plt.subplots(1, 2, figsize=(15, 5))
 
         a1.scatter(mx, md[depth_col].values, c=mval, cmap=cmap, norm=norm,
                    s=10, alpha=0.5)
         sc = a1.scatter(gx, gz, c=result["observed"].values, cmap=cmap, norm=norm,
                         s=140, edgecolor="k", linewidth=1.3)
-        fig.colorbar(sc, ax=a1, shrink=0.85).set_label(model_col)
-        a1.set_title("Ground truth over informed inversion", **self.titleFontKws)
+        cb = fig.colorbar(sc, ax=a1, shrink=0.85)
+        if u in model_col:
+            if metric is not None:
+                label = metric
+            else:
+                label = model_col.split('(')[0]
+            units = model_col.split('(')[1]
+            cb.set_label(label.title() + ' (' + units, **self.cbarTitleKws)
+        else:
+            if metric is not None:
+                cb.set_label(metric.title() + (f" ({u})" if u else ""), **self.cbarTitleKws)
+            else:
+                cb.set_label(model_col.title() + (f" ({u})" if u else ""), **self.cbarTitleKws)
+        if cbticks is not None:
+            cb.set_ticks(cbticks)
+            cb.set_ticklabels([str(t) for t in cbticks])
+        cb.ax.tick_params(**self.cbarTickKws)
+        if rawOrInf == 'raw':
+            plotType = 'raw'
+        else:
+            plotType = 'informed'
+        a1.set_title(f"Ground truth over {plotType} inversion".title(), **self.titleFontKws)
         a1.set_xlabel("Length (m)", **self.labelFontKws)
-        a1.set_ylabel("Depth (m)", **self.labelFontKws)
+        a1.set_ylabel(depthOrElev + " (m)", **self.labelFontKws)
+        if depthOrElev == 'Depth':
+            a1.invert_yaxis()
 
         if dev_space == "ratio":
             d = result["ratio"].values; dc = 1.0; dlabel = "model / obs"
         elif dev_space == "difference":
-            d = result["dev_linear"].values; dc = 0.0; dlabel = "model $-$ obs"
+            d = result["dev_linear"].values; dc = 0.0
+            dlabel = f"model $-$ obs ({u})" if u else "model $-$ obs"
         else:
             d = result["dev_log10"].values; dc = 0.0; dlabel = r"model$-$obs ($\log_{10}$)"
-        lim = np.nanpercentile(np.abs(d - dc), 98) if np.isfinite(d).any() else 1.0
-        lim = lim if (np.isfinite(lim) and lim > 0) else (abs(dc) or 1.0)
-        vmin, vmax = dc - lim, dc + lim
+        if diffticks is not None:
+            vmin, vmax = diffticks[0], diffticks[-1]
+        else:
+            lim = np.nanpercentile(np.abs(d - dc), 98) if np.isfinite(d).any() else 1.0
+            lim = lim if (np.isfinite(lim) and lim > 0) else (abs(dc) or 1.0)
+            vmin, vmax = dc - lim, dc + lim
         if dev_space == "ratio":
             vmin = max(vmin, 1e-9)
         a2.scatter(mx, md[depth_col].values, c="0.85", s=8)
-        sc2 = a2.scatter(gx, gz, c=d, cmap="coolwarm",
-                         norm=TwoSlopeNorm(vcenter=dc, vmin=vmin, vmax=vmax),
-                         s=140, edgecolor="k", linewidth=1.3)
-        fig.colorbar(sc2, ax=a2, shrink=0.85).set_label(dlabel)
-        a2.set_title("Model$-$ground-truth deviation", **self.titleFontKws)
+        if is_divergent(devCmap):
+            sc2 = a2.scatter(gx, gz, c=d, cmap=devCmap,
+                             norm=TwoSlopeNorm(vcenter=dc, vmin=vmin, vmax=vmax),
+                             s=140, edgecolor="k", linewidth=1.3)
+        else:
+            sc2 = a2.scatter(gx, gz, c=d, cmap=devCmap,
+                             norm=Normalize(vmin=vmin, vmax=vmax),
+                             s=140, edgecolor="k", linewidth=1.3)
+        cb2 = fig.colorbar(sc2, ax=a2, shrink=0.85)
+        cb2.set_label(dlabel, **self.cbarTitleKws)
+        if diffticks is not None:
+            cb2.set_ticks(diffticks)
+            cb2.set_ticklabels([str(t) for t in diffticks])
+        cb2.ax.tick_params(**self.cbarTickKws)
+        a2.set_title("Model$-$ground-truth deviation".title(), **self.titleFontKws)
         a2.set_xlabel("Length (m)", **self.labelFontKws)
-        a2.set_ylabel("Depth (m)", **self.labelFontKws)
+        a2.set_ylabel(depthOrElev + " (m)", **self.labelFontKws)
+        if depthOrElev == 'Depth':
+            a2.invert_yaxis()
         fig.tight_layout()
         if figname:
             plt.savefig(figname, dpi=300)

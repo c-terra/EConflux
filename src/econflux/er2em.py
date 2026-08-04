@@ -33,17 +33,52 @@ class DataMapper:
            
     '''
 
-    def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1): # standard kwargs for the DataMapper class
+    def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1,
+                 weighted=False, weight_power=2, weight_eps=1e-12): # standard kwargs for the DataMapper class
         self.num_neighbors = num_neighbors # number of neighbors spatially closest to the data
+        self.weighted = weighted          # if True, weight neighbor means by inverse distance (IDW); False = unweighted (original behavior)
+        self.weight_power = weight_power  # IDW power p: weight = 1 / (distance**p + weight_eps); higher p => more local
+        self.weight_eps = weight_eps      # floor so a coincident neighbor (distance 0) gets a finite, dominant weight
         self.max_distance_xy = max_distance_xy # maximum distance to be examined on the x-y plane
         self.max_distance_z = max_distance_z # maximum depth/elevation to be examined on the z axis
         self.ckdMethod = ckdMethod   # 'num' for original implementation, 'dist' to average all points within the max_distance, 'auto' to automatically determine the max_distance
         self.njobs = njobs   # Number of threads to use for parallel processing. Default is 1. Setting to -1 uses all available CPU threads.
     
     # defining mesh dataframe with x, y, Z geometry for mapping, collocation, and binning of data
-    def mapXYZ(self, mesh_df, dataframes, dfnames):
+    def _agg_means(self, values, coords=None, mesh_pt=None):
+        """Return (arithmetic, geometric, harmonic) means over `values`.
+
+        When self.weighted is True and `coords` (the neighbors' coordinates) and
+        `mesh_pt` (the target mesh point's coordinates) are given, each neighbor
+        is weighted by inverse distance, w_i = 1 / (d_i**weight_power +
+        weight_eps), so closer source points contribute more (a coincident point
+        dominates). With self.weighted False -- or coords/mesh_pt omitted -- the
+        weights are uniform and the results equal the plain arithmetic,
+        geometric, and harmonic means. Geometric/harmonic means require strictly
+        positive values and return NaN otherwise (e.g. in-phase data).
+        """
+        values = np.asarray(values, dtype=float)
+        if values.size == 0:
+            return np.nan, np.nan, np.nan
+        if self.weighted and coords is not None and mesh_pt is not None:
+            d = np.sqrt(np.sum((np.asarray(coords, dtype=float) - np.asarray(mesh_pt, dtype=float)) ** 2, axis=1))
+            w = 1.0 / (np.power(d, self.weight_power) + self.weight_eps)
+        else:
+            w = np.ones(values.size)
+        arith = np.average(values, weights=w)
+        if np.all(values > 0):
+            geom = gmean(values, weights=w)
+            harm = hmean(values, weights=w)
+        else:
+            geom = np.nan
+            harm = np.nan
+        return arith, geom, harm
+
+    def mapXYZ(self, mesh_df, dataframes, dfnames, topo_correct='auto',
+              topo_tol=None, surf_k=12, topo_verbose=True):
         # Clean the target mesh data by removing infinite/NaN values and ensuring coordinates exist
         mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) # remove inf and/or NaN values from mesh
+        mesh_df.reset_index(drop=True, inplace=True)
         result_df = mesh_df.copy() # copy mesh geometry to save informed values on to
         distance_data = [] # empty list for distances between data
 
@@ -54,8 +89,39 @@ class DataMapper:
         # Iterate through each source dataframe (e.g., different sensor datasets)
         for idx, df in enumerate(dataframes):
             df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z']) # remove inf and/or NaN values from dataframe
+            df.reset_index(drop=True, inplace=True)
             if all(col in df.columns for col in ['x', 'y', 'Z']): # step to mapping with clean data
                 
+                # --- optional topographic alignment: drape source onto mesh surface ---
+                if topo_correct and len(df) and len(mesh_df):
+                    off = self._topo_offset(mesh_df, df, surf_k=surf_k)
+                    max_abs = float(np.nanmax(np.abs(off))) if len(off) else 0.0
+                    med_abs = float(np.median(np.abs(off))) if len(off) else 0.0  # robust to surface-estimate outliers
+                    self.topo_offset_summary = {
+                        'median_offset_m': float(np.median(off)) if len(off) else 0.0,
+                        'median_abs_offset_m': med_abs,
+                        'std_offset_m': float(np.std(off)) if len(off) else 0.0,
+                        'max_abs_offset_m': max_abs,
+                        'datum_like': bool(len(off) and np.std(off) < 0.5),
+                    }
+                    tol = topo_tol if topo_tol is not None else max(0.25, 2.0 * self.max_distance_z)
+                    # Trigger on a ROBUST measure (median |offset|), NOT the max: a few noisy
+                    # surface-estimate outliers on a dense, already-aligned source (e.g. ERI -> ERI)
+                    # must not fire a spurious drape. A real datum/topographic mismatch offsets
+                    # the bulk of points, so its median |offset| exceeds tol.
+                    apply_corr = (topo_correct is True) or (topo_correct == 'auto' and med_abs > tol)
+                    if apply_corr:
+                        df = df.copy()
+                        df['Z'] = df['Z'].values + off          # shift source into the mesh's vertical frame
+                        if topo_verbose:
+                            kind = 'datum shift' if self.topo_offset_summary['datum_like'] else 'topographic drape'
+                            print("[mapXYZ] {} applied to '{}': median |offset| {:.2f} m (signed {:.2f} m, max {:.2f} m)".format(
+                                  kind, dfnames[idx] if dfnames[idx] else 'source',
+                                  med_abs, self.topo_offset_summary['median_offset_m'], max_abs))
+                    elif topo_verbose and topo_correct == 'auto':
+                        print("[mapXYZ] no significant topographic mismatch (median |offset| "
+                              "{:.2f} m <= {:.2f} m tol; max {:.2f} m)".format(med_abs, tol, max_abs))
+
                 tree = cKDTree(df[['x', 'y', 'Z']].values) # map using cKDTree from scipy.spatial 
 
                 #Query by specific number of neighbors ('num')
@@ -87,9 +153,9 @@ class DataMapper:
                             for m in range(len(idxs)):
                                 if dists[m] == np.inf:
                                     continue
-                                distance_data.append({'x': mesh_df.loc[idxs[m], 'x'],
-                                                      'y': mesh_df.loc[idxs[m], 'y'],
-                                                      'Z': mesh_df.loc[idxs[m], 'Z'],
+                                distance_data.append({'x': mesh_df.loc[i, 'x'],
+                                                      'y': mesh_df.loc[i, 'y'],
+                                                      'Z': mesh_df.loc[i, 'Z'],
                                                       'distance': dists[m]})
                         else:
                             distance_data.append({'x': mesh_df.loc[i, 'x'],
@@ -182,27 +248,25 @@ class DataMapper:
                 
                 if self.num_neighbors > 1: # apply different mean calcuations if number of neighbors is called
                 
+                    mesh_pts = mesh_df[['x', 'y', 'Z']].values  # positional, aligned with the query order of `indices`
                     for col in df.columns:
                         if col not in ['x', 'y', 'Z']:
                             arithmetic_means, geometric_means, harmonic_means = [], [], [] # empty arrays for the arithmetic, geometric, and harmonic means
                                 
-                            for row in indices:
+                            for i, row in enumerate(indices):
                                 # Ensure we don't include out-of-bounds indices from cKDTree
                                 if len(df) not in row:
                                     valid_values = df.loc[row, col].values # define values within bounds for means
+                                    # inverse-distance weighting (when self.weighted) uses neighbor coords vs this mesh point
+                                    coords = df.loc[row, ['x', 'y', 'Z']].values if self.weighted else None
+                                    a_mean, g_mean, h_mean = self._agg_means(valid_values, coords, mesh_pts[i] if self.weighted else None)
                                 else:
-                                    valid_values = [] # if no values, not valid, empty array
-        
-                                if len(valid_values) > 0: # calculate means where possible based on the distance away and number of neighbors
-                                    arithmetic_means.append(valid_values.mean()) #arithmetic mean for valid values
-                                    # Geometric/Harmonic means require positive values
-                                    geometric_means.append(gmean(valid_values) if np.all(valid_values > 0) else np.nan) # geometric mean for valid values
-                                    harmonic_means.append(hmean(valid_values) if np.all(valid_values > 0) else np.nan) # harmonic mean for valid values
-                                else:
-                                    # If no neighbors found, append NaN
-                                    arithmetic_means.append(np.nan) # if not valid, NaN arithmetic mean
-                                    geometric_means.append(np.nan) # if not valid, NaN geometric mean
-                                    harmonic_means.append(np.nan)  # if not valid, NaN harmonic mean
+                                    # If a neighbor slot is the cKDTree sentinel, treat the cell as unmatched
+                                    a_mean, g_mean, h_mean = np.nan, np.nan, np.nan
+
+                                arithmetic_means.append(a_mean) # arithmetic mean (distance-weighted when self.weighted)
+                                geometric_means.append(g_mean)  # geometric mean; NaN where values are non-positive
+                                harmonic_means.append(h_mean)   # harmonic mean; NaN where values are non-positive
 
                             # Store results in the result dataframe
                             # Handle cases where dfname is empty 
@@ -241,6 +305,57 @@ class DataMapper:
 
         return result_df, distance_data # call complete results df and distance data
         
+    
+    def _topo_offset(self, mesh_df, df, surf_k=12):
+        """Per-source-point vertical offset that drapes the source's surface onto
+        the mesh (e.g. ERI) surface at the same horizontal position. Returns an
+        array aligned to df's rows; adding it to df['Z'] puts both datasets in a
+        common vertical reference. mesh_df and df must already be free of NaN
+        x/y/Z. The mesh surface near a point is the max Z of its `surf_k` nearest
+        mesh nodes; the source surface is the top of that point's sounding
+        (max Z among points sharing its x,y)."""
+        mz = mesh_df['Z'].values
+        mtree = cKDTree(mesh_df[['x', 'y']].values)
+        km = int(min(surf_k, len(mz)))
+        _, mi = mtree.query(df[['x', 'y']].values, k=km)
+        mi = np.asarray(mi).reshape(len(df), -1)
+        surf_mesh = mz[mi].max(axis=1)
+        sz = df['Z'].values
+        stree = cKDTree(df[['x', 'y']].values)
+        ks = int(min(surf_k, len(sz)))
+        _, si = stree.query(df[['x', 'y']].values, k=ks)
+        si = np.asarray(si).reshape(len(df), -1)
+        surf_src = sz[si].max(axis=1)
+        return surf_mesh - surf_src
+
+    def detect_topo_offset(self, mesh_df, source_df, surf_k=12):
+        """Quantify any vertical/topographic mismatch between a source dataset
+        (e.g. EMI models) and a mesh that follows topography (e.g. an ERI
+        survey). For each source point, the mesh surface elevation at its
+        horizontal position is compared with the top of that point's sounding.
+
+        Returns (offsets, summary). `summary` holds median/mean/std/max |offset|
+        in metres and `datum_like` (True when the offset is ~constant -- a datum
+        shift -- rather than spatially varying topography). A max |offset| near
+        zero means the two already share a vertical reference and mapXYZ needs no
+        correction; a large value (depth-vs-elevation, or a datum offset) means
+        the raw Z values don't overlap and matching would fail without it."""
+        msh = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z'])
+        src = source_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y', 'Z'])
+        if len(msh) == 0 or len(src) == 0:
+            return np.array([]), {'note': 'empty input', 'max_abs_offset_m': 0.0}
+        off = self._topo_offset(msh, src, surf_k=surf_k)
+        mx = float(np.nanmax(np.abs(off)))
+        return off, {
+            'median_offset_m': float(np.median(off)),
+            'median_abs_offset_m': float(np.median(np.abs(off))),
+            'mean_offset_m': float(np.mean(off)),
+            'std_offset_m': float(np.std(off)),
+            'max_abs_offset_m': mx,
+            'datum_like': bool(np.std(off) < 0.5),
+        }
+
+    
     """ 2D collocation (surface-only): ignores vertical separation and uses only XY proximity """
     def mapXY(self, mesh_df, dataframes, dfnames):
         '''
@@ -248,11 +363,13 @@ class DataMapper:
         Similar to mapXYZ but ignores the vertical (Z) dimension.
         '''
         mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
+        mesh_df.reset_index(drop=True, inplace=True)
         result_df = mesh_df.copy()
         distance_data = []
         
         for idx, df in enumerate(dataframes):
             df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
+            df.reset_index(drop=True, inplace=True)
             if all(col in df.columns for col in ['x', 'y']):
                 
                 # KDTree built on X and Y only 
@@ -349,24 +466,22 @@ class DataMapper:
                 # Statistical Aggregation (2D) 
                 if (self.num_neighbors > 1) | (self.ckdMethod != 'num'):
                 
+                    mesh_pts = mesh_df[['x', 'y']].values  # positional, aligned with the query order of `indices`
                     for col in df.columns:
                         if col not in ['x', 'y']:
                             arithmetic_means, geometric_means, harmonic_means = [], [], []
                                 
-                            for row in indices:
+                            for i, row in enumerate(indices):
                                 if len(df) not in row:
                                     valid_values = df.loc[row, col].values
+                                    coords = df.loc[row, ['x', 'y']].values if self.weighted else None
+                                    a_mean, g_mean, h_mean = self._agg_means(valid_values, coords, mesh_pts[i] if self.weighted else None)
                                 else:
-                                    valid_values = []
-        
-                                if len(valid_values) > 0:
-                                    arithmetic_means.append(valid_values.mean())
-                                    geometric_means.append(gmean(valid_values) if np.all(valid_values > 0) else np.nan)
-                                    harmonic_means.append(hmean(valid_values) if np.all(valid_values > 0) else np.nan)
-                                else:
-                                    arithmetic_means.append(np.nan)
-                                    geometric_means.append(np.nan)
-                                    harmonic_means.append(np.nan)  
+                                    a_mean, g_mean, h_mean = np.nan, np.nan, np.nan
+
+                                arithmetic_means.append(a_mean)
+                                geometric_means.append(g_mean)
+                                harmonic_means.append(h_mean)  
 
                             # Handle cases where dfname is empty 
                             if dfnames[idx] == '':
@@ -401,6 +516,7 @@ class DataMapper:
                                 result_df[f'{dfnames[idx]}_{col}'] = nearest_value
                                 
         return result_df, distance_data
+
     
     def create_mean_dfs(self, df):
         '''
@@ -420,29 +536,69 @@ class DataMapper:
         
         return df_arth, df_geom, df_harm
 
-    def plot_distance_histogram(self, distance_data, xyAnn = (0.7,0.8)):
+    @staticmethod
+    def _ax_scale(ax, ref=3.8):
+        """Scale factor (~1 for a ref-inch panel) so titles, labels, markers and
+        colorbars shrink to fit whatever axis they are drawn into -- e.g. a
+        crowded 2x2. Falls back to 1.0 if the axis size can't be determined."""
+        try:
+            fig = ax.figure
+            pos = ax.get_position()
+            w_in = pos.width * fig.get_size_inches()[0]
+            h_in = pos.height * fig.get_size_inches()[1]
+            s = min(w_in, h_in) / ref
+        except Exception:
+            s = 1.0
+        return float(np.clip(s, 0.4, 1.5))
+
+    @staticmethod
+    def _units_label(base, units, log=False, dimensionless=False):
+        """Append physical units to a colorbar label. log=True wraps them as
+        log10(units); dimensionless=True (e.g. a ratio) appends nothing."""
+        if not units or dimensionless:
+            return base
+        if log:
+            return base + r" ($\log_{10}$(" + str(units) + "))"
+        return base + " (" + str(units) + ")"
+
+    def plot_distance_histogram(self, distance_data, xyAnn=(0.97, 0.97),
+                                savefig=False, ax=None, figdir=None):
         '''
-        Generates a histogram of the spatial displacement between the mesh and raw data.
-        Provides Mean Squared Error (MSE) and standard deviation stats.
+        Histogram of the mesh-to-source spatial displacement, annotated with the
+        RMS displacement, mean and standard deviation. Pass `ax` to draw into an
+        existing panel; fonts/markers scale to the panel size so it stays
+        legible in a crowded subplot grid.
         '''
         distM = pd.DataFrame(distance_data)
-        
-        mse = np.sqrt(np.mean(distM['distance']**2))
+        rms = np.sqrt(np.mean(distM['distance'] ** 2))   # RMS displacement (not MSE)
         mean_distance = np.mean(distM['distance'])
         std_distance = np.std(distM['distance'])
-        
-        plt.hist(distM['distance'], bins=50, edgecolor='black')
-        plt.xlabel('Displacement (m)')
-        plt.ylabel('Frequency')
-        
-        plt.annotate(
-            f'N = {len(distM)}\nMSE: {mse:.2f}\nMean: {mean_distance:.2f}\nStd: {std_distance:.2f}',
-            xy = xyAnn, 
-            xycoords='axes fraction',
-            fontsize=12,
-            bbox=dict(facecolor='white', alpha=0.8))
-        
-        plt.show()
+
+        standalone = ax is None
+        if standalone:
+            fig, ax = plt.subplots(figsize=(6, 4))
+        s = self._ax_scale(ax)
+
+        ax.hist(distM['distance'], bins=50, edgecolor='black',
+                linewidth=max(0.2, 0.6 * s))
+        ax.set_xlabel('Displacement (m)', fontsize=14 * s, fontweight='bold')
+        ax.set_ylabel('Frequency', fontsize=14 * s, fontweight='bold')
+        ax.set_title('Spatial Displacement Histogram', fontsize=16 * s, fontweight='bold')
+        ax.tick_params(labelsize=12 * s)
+
+        ha = 'right' if xyAnn[0] > 0.5 else 'left'
+        va = 'top' if xyAnn[1] > 0.5 else 'bottom'
+        ax.annotate(
+            f'N = {len(distM)}\nRMS: {rms:.2f}\nMean: {mean_distance:.2f}\nStd: {std_distance:.2f}',
+            xy=xyAnn, xycoords='axes fraction', ha=ha, va=va, fontsize=12 * s,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8,
+                      linewidth=0.5 * s))
+
+        if standalone:
+            fig.tight_layout()
+        if savefig and figdir:
+            ax.figure.savefig(figdir + '_histogram.png', dpi=300)
+        return ax
 
     def filter_and_rename(self, eca, minCut=5, maxCut=5, maxECa=50, minECa=0, keepInphase=False):
         '''
@@ -652,8 +808,8 @@ class DataMapper:
         rows = []
         for i in range(len(mesh)):
             j = self._keep_valid(idx[i], mesh_xyz[i, 2], src_z, n_src,
-                                 self.max_distance_z)                 # <<< drop-in
-            n_eff = int(j.size)                                       # <<< drop-in
+                                 self.max_distance_z)                
+            n_eff = int(j.size)                                       
             if n_eff:
                 d3 = np.sqrt(((src_xyz[j] - mesh_xyz[i]) ** 2).sum(axis=1))
                 m = d3.argmin()
@@ -683,8 +839,7 @@ class DataMapper:
     def support_by_depth(self, support_df, depth_col="Z", nbins=12):
         """Depth-resolved roll-up of support_field(): the panel that explains
         where (with depth) interpolation confidence collapses, and would flag
-        a non-informative pairing (e.g. the Virginia EM2ER null result) before
-        any inversion is run."""
+        a non-informative pairing before any inversion is run."""
         s = support_df.copy()
         s["depth_bin"] = pd.cut(s[depth_col], bins=nbins)
         return (s.groupby("depth_bin", observed=True)
@@ -887,22 +1042,29 @@ class DataMapper:
     def plot_confidence_section(df, value, depth_col="Z", x_col="x",
                                 title=None, cmap="viridis", log_color=False,
                                 center=None, value_space=None, clabel=None,
-                                xlim=None, figname=None, ax=None,
-                                **scatter_kw):
+                                clip=None, units=None, log_units=False,
+                                xlim=None, figname=None, ax=None, plotDepth=False,
+                                fontKws=None, **scatter_kw):
         """Scatter any per-cell confidence field on a length-vs-depth section.
+
+        Pass `ax` to draw into an existing panel: no figure-level tight_layout
+        or show is triggered, and the title, labels, ticks, marker size and
+        colorbar all scale to the panel size so the section stays legible in a
+        crowded 2x2.
 
         center : float or None
             If given (e.g. 0.0 for signed LOOCV residuals), use a diverging
-            TwoSlopeNorm centred on this value with symmetric limits so that
-            `center` renders white. Overrides log_color and defaults cmap to
-            'coolwarm'.
+            TwoSlopeNorm centred on this value so that `center` renders white.
         xlim : tuple or None
             Shared x-axis limits (e.g. the mesh X range) so multiple sections
             line up exactly.
         """
-        from matplotlib.colors import LogNorm, TwoSlopeNorm
-        if ax is None:
+        from matplotlib.colors import LogNorm, TwoSlopeNorm, Normalize
+        standalone = ax is None
+        if standalone:
             _, ax = plt.subplots(figsize=(8, 4))
+        s = DataMapper._ax_scale(ax)
+
         c = np.asarray(df[value].values, dtype=float)
         ctr = center
         if value_space == "ratio":          # show a log10 residual in linear (ratio) form
@@ -910,6 +1072,7 @@ class DataMapper:
             if ctr is not None:
                 ctr = 10.0 ** ctr
 
+        extend = "neither"
         if ctr is not None:
             lim = np.nanpercentile(np.abs(c - ctr), 98)
             lim = lim if (np.isfinite(lim) and lim > 0) else (abs(ctr) or 1.0)
@@ -917,26 +1080,52 @@ class DataMapper:
             if value_space == "ratio":
                 vmin = max(vmin, 1e-9)      # ratios are strictly positive
             norm = TwoSlopeNorm(vcenter=ctr, vmin=vmin, vmax=vmax)
+            extend = "both"
             if cmap == "viridis":
                 cmap = "coolwarm"
         elif log_color:
             pos = c[c > 0]
             norm = LogNorm(vmin=np.nanmin(pos), vmax=np.nanmax(c)) if pos.size else None
+        elif clip is not None:
+            lo, hi = np.nanpercentile(c, clip)   # robust limits so outliers
+            if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):   # don't flatten the panel
+                lo, hi = np.nanmin(c), np.nanmax(c)
+            norm = Normalize(vmin=lo, vmax=hi)
+            extend = "both"
         else:
             norm = None
 
-        sc = ax.scatter(df[x_col], df[depth_col], c=c, cmap=cmap, norm=norm,
-                        s=scatter_kw.pop("s", 12), **scatter_kw)
-        cb = plt.colorbar(sc, ax=ax, shrink=0.85)
-        cb.set_label(clabel or value)
-        ax.set_xlabel("Length (m)")
-        ax.set_ylabel("Depth (m)")
+        depth = np.asarray(df[depth_col].values, dtype=float)
+        if np.max(depth) < 0:
+            depth = -depth
+            depthOrElev = 'Depth'
+        elif (np.max(depth) > 0) and plotDepth:
+            depth -= (np.nanmax(depth) + 0.01)
+            depth *= -1
+            depthOrElev = 'Depth'
+        else:
+            depthOrElev = 'Elevation'
+
+        sc = ax.scatter(df[x_col], depth, c=c, cmap=cmap, norm=norm,
+                        s=scatter_kw.pop("s", max(2.0, 12 * s ** 2)), **scatter_kw)
+        cb = ax.figure.colorbar(sc, ax=ax, fraction=0.046, pad=0.04, extend=extend)
+        cb.set_label(DataMapper._units_label(clabel or value, units,
+                                             log=(log_units or value_space == "log10"),
+                                             dimensionless=(value_space == "ratio")),
+                     fontsize=14 * s, fontweight='bold')
+        cb.ax.tick_params(labelsize=12 * s)
+        ax.set_xlabel("Length (m)", fontsize=14 * s, fontweight='bold')
+        ax.set_ylabel(depthOrElev + " (m)", fontsize=14 * s, fontweight='bold')
+        ax.tick_params(labelsize=12 * s)
+        if depthOrElev == 'Depth':
+            ax.invert_yaxis()
         if xlim is not None:
             ax.set_xlim(*xlim)
-        ax.set_title(title or value)
-        plt.tight_layout()
-        if figname:
-            plt.savefig(figname, dpi=300)
+        ax.set_title(title or value, fontsize=16 * s, fontweight='bold')
+        if standalone:
+            ax.figure.tight_layout()
+        if figname and standalone:
+            ax.figure.savefig(figname, dpi=300)
         return ax
 
     @staticmethod
@@ -957,3 +1146,84 @@ class DataMapper:
         else:
             keep = ~np.isfinite(doi) | (z >= -doi)
         return df[keep].reset_index(drop=True)
+    
+    def build_comparison_grid(self, grid, models, agg="geom",
+                              coord_cols=("x", "y", "Z"), keep_cols=("X",),
+                              max_dist=None, require_all=True):
+        """Aggregate several models onto ONE common comparison grid (fine -> coarse)
+        so each cell holds a single representative value per model, for fair and
+        approximately independent cell-by-cell statistics.
+
+        Unlike mapXYZ (nearest source -> mesh, which REPLICATES a coarse source
+        across many fine cells), this assigns every source cell to its nearest
+        comparison-grid cell and AVERAGES within the cell -- the correct
+        direction when the comparison grid is at (or below) each model's native
+        resolution. Build the grid at the limiting (coarsest, usually EMI)
+        resolution so every model is smoothed equally.
+
+        Parameters
+        ----------
+        grid : DataFrame
+            Comparison-cell centroids; must contain `coord_cols` (+ any
+            `keep_cols`, e.g. along-line 'X').
+        models : dict
+            {output_name: {"df": DataFrame, "value": value_col,
+                           "area": area_col or None, "mask": flag_col or None}}
+            Rows where `mask` == 1 (e.g. a DOI flag) are dropped before
+            aggregation.
+        agg : {"geom","arith","median"}
+            Within-cell aggregation. "geom" (default) and "arith" honour `area`
+            weights; "median" is unweighted. EC is skewed/log -> "geom".
+        max_dist : float or None
+            Drop source cells farther than this (Euclidean in coord space) from
+            every grid centroid. None keeps all.
+        require_all : bool
+            Keep only cells with a valid value from EVERY model (common support).
+
+        Returns
+        -------
+        DataFrame: coord_cols + present keep_cols + one column per model +
+        "<name>_n" (source-cell count aggregated into that cell, per model).
+        Write it to CSV and feed straight to EConfluxStats.
+        """
+        coord_cols = list(coord_cols)
+        g = grid.replace([np.inf, -np.inf], np.nan).dropna(subset=coord_cols).reset_index(drop=True)
+        out = g[coord_cols + [c for c in keep_cols if c in g.columns]].copy()
+        ncells = len(out)
+        tree = cKDTree(g[coord_cols].values)
+
+        for name, spec in models.items():
+            vcol = spec["value"]; acol = spec.get("area"); mcol = spec.get("mask")
+            sub = spec["df"].copy()
+            if mcol is not None and mcol in sub.columns:
+                sub = sub[sub[mcol] != 1]
+            sub = sub.replace([np.inf, -np.inf], np.nan).dropna(subset=coord_cols + [vcol])
+            sub = sub[sub[vcol] > 0]
+            agg_val = np.full(ncells, np.nan); cnt = np.zeros(ncells, dtype=int)
+            if len(sub):
+                dist, gi = tree.query(sub[coord_cols].values)
+                if max_dist is not None:
+                    ok = dist <= max_dist
+                    sub, gi = sub[ok], gi[ok]
+                v = sub[vcol].values.astype(float)
+                w = (np.abs(sub[acol].values.astype(float))
+                     if (acol is not None and acol in sub.columns) else np.ones(len(v)))
+                np.add.at(cnt, gi, 1)
+                if agg == "median":
+                    med = pd.DataFrame({"g": gi, "v": v}).groupby("g")["v"].median()
+                    agg_val[med.index.values] = med.values
+                else:
+                    wsum = np.zeros(ncells); np.add.at(wsum, gi, w)
+                    nz = wsum > 0
+                    if agg == "geom":
+                        ls = np.zeros(ncells); np.add.at(ls, gi, w * np.log(v))
+                        agg_val[nz] = np.exp(ls[nz] / wsum[nz])
+                    else:  # arith
+                        vs = np.zeros(ncells); np.add.at(vs, gi, w * v)
+                        agg_val[nz] = vs[nz] / wsum[nz]
+            out[name] = agg_val
+            out[name + "_n"] = cnt
+
+        if require_all:
+            out = out.dropna(subset=list(models.keys())).reset_index(drop=True)
+        return out
