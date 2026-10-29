@@ -1,3 +1,8 @@
+v0.3.0
+-------
+-Included support for depth filtering and handling of ERI mesh elements below EMI model DOI in EM2ER workflow.
+-Optimization improvements for mapXY function in DataMapper.
+
 v0.2.0
 -------
 -Files for the three classes included in previous update were of an older version with some (but not all) bug fixes and new functions. Correct files for each class are now included.
