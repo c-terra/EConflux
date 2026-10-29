@@ -572,8 +572,7 @@ class EConfluxStats:
         loalinestyle = linekwargs['linestyle'][1]
         del linekwargs['linestyle']
         midlinelabel = linekwargs['label'][0]
-        upperlinelabel = linekwargs['label'][1]
-        lowerlinelabel = linekwargs['label'][2]
+        loaLabel = linekwargs['label'][1]
         del linekwargs['label']
 
         if nonparam:
@@ -608,8 +607,8 @@ class EConfluxStats:
         ax.scatter(mean, diff, marker=marker, s=markersize, **kwargs)
 
         ax.axhline(mid, linestyle=mainlinestyle, label=midlinelabel, **linekwargs)
-        ax.axhline(upper, linestyle=loalinestyle, label=upperlinelabel, **linekwargs)
-        ax.axhline(lower, linestyle=loalinestyle, label=lowerlinelabel, **linekwargs)
+        ax.axhline(upper, linestyle=loalinestyle, label=loaLabel, **linekwargs)
+        ax.axhline(lower, linestyle=loalinestyle, **linekwargs)
         if legendParams['plot']:
             leg = ax.legend(loc=legendParams['loc'], fontsize=self.axisTickFontKws.get('labelsize', 6), framealpha=0.75)
             for lh in leg.legend_handles:

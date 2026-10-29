@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from scipy.stats import gmean, hmean
 from scipy.interpolate import griddata
+from scipy.signal import savgol_filter
 
 # define DataMapper used for mapping ERI data to EMI data
 class DataMapper:
@@ -35,6 +36,21 @@ class DataMapper:
 
     def __init__(self, num_neighbors=5, max_distance_xy=5.0, max_distance_z=0.5, ckdMethod='num', njobs=1,
                  weighted=False, weight_power=2, weight_eps=1e-12): # standard kwargs for the DataMapper class
+        valid_methods = {'num', 'dist', 'autoNum', 'autoDist'}
+        if int(num_neighbors) < 1:
+            raise ValueError("num_neighbors must be at least 1.")
+        if float(max_distance_xy) <= 0:
+            raise ValueError("max_distance_xy must be greater than 0.")
+        if float(max_distance_z) < 0:
+            raise ValueError("max_distance_z cannot be negative.")
+        if ckdMethod not in valid_methods:
+            raise ValueError(
+                "ckdMethod must be one of " + ", ".join(sorted(valid_methods)) + "."
+            )
+        if float(weight_power) <= 0:
+            raise ValueError("weight_power must be greater than 0.")
+        if float(weight_eps) <= 0:
+            raise ValueError("weight_eps must be greater than 0.")
         self.num_neighbors = num_neighbors # number of neighbors spatially closest to the data
         self.weighted = weighted          # if True, weight neighbor means by inverse distance (IDW); False = unweighted (original behavior)
         self.weight_power = weight_power  # IDW power p: weight = 1 / (distance**p + weight_eps); higher p => more local
@@ -193,7 +209,7 @@ class DataMapper:
 
                     # First, query k-neighbors to find how far apart points typically are
                     distances, _ = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, workers=self.njobs)
-                    distThresh = np.max(distances, axis=0)
+                    distThresh = float(np.nanmax(distances))
 
                     # Re-query using the calculated dynamic threshold
                     distances, indices = tree.query(mesh_df[['x', 'y', 'Z']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
@@ -218,7 +234,7 @@ class DataMapper:
                 elif self.ckdMethod == 'autoDist':
                     
                     distances, _ = tree.query(mesh_df[['x', 'y', 'Z']].values, k=1, workers=self.njobs)
-                    distThresh = np.max(distances, axis=0)
+                    distThresh = float(np.nanmax(distances))
                     
                     # Re-query using the calculated dynamic threshold
                     indices = tree.query_ball_point(mesh_df[['x', 'y', 'Z']].values, distThresh, workers=self.njobs)
@@ -355,21 +371,287 @@ class DataMapper:
             'datum_like': bool(np.std(off) < 0.5),
         }
 
-    
+    def _aggregate_xy_flat(self, values, source_index, target_index,
+                           distances, n_targets, means):
+        """Vectorized neighbor aggregation used by :meth:`mapXY`.
+
+        ``source_index`` and ``target_index`` describe a flattened sparse
+        target-to-source neighbor graph.  Aggregation with ``np.bincount``
+        avoids one Python/SciPy function call per target cell.
+        """
+        values = np.asarray(values, dtype=float)
+        source_index = np.asarray(source_index, dtype=int)
+        target_index = np.asarray(target_index, dtype=int)
+        distances = np.asarray(distances, dtype=float)
+        out = {name: np.full(n_targets, np.nan, dtype=float) for name in means}
+        if source_index.size == 0:
+            return out
+
+        neighbor_values = values[source_index]
+        finite = np.isfinite(neighbor_values) & np.isfinite(distances)
+        if not finite.any():
+            return out
+
+        target_valid = target_index[finite]
+        values_valid = neighbor_values[finite]
+        distances_valid = distances[finite]
+        if self.weighted:
+            weights = 1.0 / (
+                np.power(distances_valid, self.weight_power) + self.weight_eps
+            )
+        else:
+            weights = np.ones(values_valid.size, dtype=float)
+
+        weight_sum = np.bincount(
+            target_valid, weights=weights, minlength=n_targets
+        )
+        if "arith" in means:
+            weighted_sum = np.bincount(
+                target_valid, weights=weights * values_valid,
+                minlength=n_targets,
+            )
+            np.divide(
+                weighted_sum, weight_sum, out=out["arith"],
+                where=weight_sum > 0,
+            )
+
+        if "geom" in means or "harm" in means:
+            positive = values_valid > 0
+            nonpositive_count = np.bincount(
+                target_valid[~positive], minlength=n_targets
+            )
+            target_positive = target_valid[positive]
+            values_positive = values_valid[positive]
+            weights_positive = weights[positive]
+            positive_weight_sum = np.bincount(
+                target_positive, weights=weights_positive,
+                minlength=n_targets,
+            )
+            valid_positive_target = (
+                (positive_weight_sum > 0) & (nonpositive_count == 0)
+            )
+
+            if "geom" in means:
+                log_sum = np.bincount(
+                    target_positive,
+                    weights=weights_positive * np.log(values_positive),
+                    minlength=n_targets,
+                )
+                log_mean = np.full(n_targets, np.nan, dtype=float)
+                np.divide(
+                    log_sum, positive_weight_sum, out=log_mean,
+                    where=valid_positive_target,
+                )
+                out["geom"][valid_positive_target] = np.exp(
+                    log_mean[valid_positive_target]
+                )
+
+            if "harm" in means:
+                inverse_sum = np.bincount(
+                    target_positive,
+                    weights=weights_positive / values_positive,
+                    minlength=n_targets,
+                )
+                np.divide(
+                    positive_weight_sum, inverse_sum, out=out["harm"],
+                    where=valid_positive_target & (inverse_sum > 0),
+                )
+        return out
+
     """ 2D collocation (surface-only): ignores vertical separation and uses only XY proximity """
-    def mapXY(self, mesh_df, dataframes, dfnames):
+    def mapXY(self, mesh_df, dataframes, dfnames,
+              means=("arith", "geom", "harm"), return_distances=True,
+              deduplicate_xy=False):
+        """Map one or more source dataframes to target rows using XY proximity.
+
+        The neighbor search and statistical aggregation are vectorized.  The
+        default output remains compatible with older calls.  For faster,
+        lower-memory workflows, request only the needed means and optionally
+        suppress the distance-record list.
+
+        Parameters
+        ----------
+        mesh_df : pandas.DataFrame
+            Target rows containing ``x`` and ``y``.
+        dataframes : sequence of pandas.DataFrame
+            Source tables containing ``x`` and ``y`` plus mapped variables.
+        dfnames : sequence of str
+            One optional output-column prefix per source table.
+        means : str or sequence of {"arith", "geom", "harm"}
+            Neighbor statistics to calculate. Defaults to all three.
+        return_distances : bool, default True
+            Return target-to-source distance records for diagnostics. False
+            returns an empty list and avoids allocating those records.
+        deduplicate_xy : bool, default False
+            Query each unique target XY coordinate once and broadcast mapped
+            values back to repeated target rows. This is exact for mapXY
+            because Z is not part of the search.
+
+        Returns
+        -------
+        result_df : pandas.DataFrame
+            Original finite-coordinate target rows plus mapped columns.
+        distance_data : list of dict
+            Accepted links with target ``x``, ``y`` and ``distance``; empty
+            when ``return_distances=False``. With ``deduplicate_xy=True``, each
+            unique horizontal target contributes links only once.
+        """
+        if len(dataframes) != len(dfnames):
+            raise ValueError("dataframes and dfnames must have the same length.")
+        if isinstance(means, str):
+            means = (means,)
+        means = tuple(dict.fromkeys(means))
+        valid_means = {"arith", "geom", "harm"}
+        invalid_means = sorted(set(means).difference(valid_means))
+        if not means or invalid_means:
+            raise ValueError(
+                "means must contain one or more of 'arith', 'geom', and 'harm'."
+            )
+
+        mesh_df = (mesh_df.replace([np.inf, -np.inf], np.nan)
+                          .dropna(subset=["x", "y"]).reset_index(drop=True))
+        if mesh_df.empty:
+            raise ValueError("mesh_df contains no finite x/y coordinates.")
+        result_df = mesh_df.copy()
+        mesh_xy = mesh_df[["x", "y"]].to_numpy(dtype=float)
+        if deduplicate_xy:
+            query_xy, inverse = np.unique(
+                mesh_xy, axis=0, return_inverse=True
+            )
+        else:
+            query_xy = mesh_xy
+            inverse = np.arange(len(mesh_df), dtype=int)
+        n_query = len(query_xy)
+        distance_data = []
+
+        for frame_number, frame in enumerate(dataframes):
+            df = (frame.replace([np.inf, -np.inf], np.nan)
+                       .dropna(subset=["x", "y"]).reset_index(drop=True))
+            if df.empty:
+                raise ValueError(
+                    f"Source dataframe {frame_number} contains no finite x/y coordinates."
+                )
+            source_xy = df[["x", "y"]].to_numpy(dtype=float)
+            tree = cKDTree(source_xy)
+            n_source = len(df)
+            k = max(int(self.num_neighbors), 1)
+
+            if self.ckdMethod == "num":
+                distances, indices = tree.query(
+                    query_xy, k=k,
+                    distance_upper_bound=self.max_distance_xy,
+                    workers=self.njobs,
+                )
+                if k == 1:
+                    distances = distances[:, None]
+                    indices = indices[:, None]
+                rectangular = True
+            elif self.ckdMethod == "autoNum":
+                # A global threshold large enough to retain the requested
+                # nearest neighbors is equivalent to this single unconstrained
+                # query, avoiding the legacy duplicate KD-tree query.
+                distances, indices = tree.query(
+                    query_xy, k=k, workers=self.njobs
+                )
+                if k == 1:
+                    distances = distances[:, None]
+                    indices = indices[:, None]
+                rectangular = True
+            else:
+                radius = self.max_distance_xy
+                if self.ckdMethod == "autoDist":
+                    nearest, _ = tree.query(query_xy, k=1, workers=self.njobs)
+                    radius = float(np.nanmax(nearest))
+                neighbor_rows = tree.query_ball_point(
+                    query_xy, radius, workers=self.njobs
+                )
+                counts = np.fromiter(
+                    (len(row) for row in neighbor_rows), dtype=int,
+                    count=n_query,
+                )
+                if counts.sum():
+                    source_index = np.concatenate([
+                        np.asarray(row, dtype=int)
+                        for row in neighbor_rows if len(row)
+                    ])
+                    target_index = np.repeat(np.arange(n_query), counts)
+                    delta = source_xy[source_index] - query_xy[target_index]
+                    distance_flat = np.sqrt(np.sum(delta * delta, axis=1))
+                else:
+                    source_index = np.empty(0, dtype=int)
+                    target_index = np.empty(0, dtype=int)
+                    distance_flat = np.empty(0, dtype=float)
+                rectangular = False
+
+            if rectangular:
+                valid = (indices != n_source) & np.isfinite(distances)
+                target_matrix = np.broadcast_to(
+                    np.arange(n_query)[:, None], indices.shape
+                )
+                source_index = indices[valid].astype(int, copy=False)
+                target_index = target_matrix[valid].astype(int, copy=False)
+                distance_flat = distances[valid].astype(float, copy=False)
+
+            if return_distances and source_index.size:
+                target_coords = query_xy[target_index]
+                records = pd.DataFrame({
+                    "x": target_coords[:, 0],
+                    "y": target_coords[:, 1],
+                    "distance": distance_flat,
+                })
+                distance_data.extend(records.to_dict(orient="records"))
+
+            prefix = dfnames[frame_number]
+            single_nearest = self.ckdMethod == "num" and k == 1
+            for col in df.columns:
+                if col in ("x", "y"):
+                    continue
+                numeric = pd.to_numeric(df[col], errors="coerce").to_numpy(
+                    dtype=float
+                )
+                requested = set(means)
+                if single_nearest:
+                    requested.add("arith")
+                if "inph" in col:
+                    # Geometric/harmonic means are undefined for signed
+                    # in-phase values. Preserve the historical behavior by
+                    # placing the arithmetic value under requested suffixes.
+                    requested.add("arith")
+                aggregated = self._aggregate_xy_flat(
+                    numeric, source_index, target_index, distance_flat,
+                    n_query, requested,
+                )
+                base = f"{prefix}_{col}" if prefix else col
+                if single_nearest:
+                    result_df[base] = aggregated["arith"][inverse]
+                    continue
+                for mean_name in means:
+                    values = (aggregated["arith"]
+                              if "inph" in col else aggregated[mean_name])
+                    result_df[f"{base}_{mean_name}"] = values[inverse]
+
+        return result_df, distance_data
+
+    def _mapXY_legacy(self, mesh_df, dataframes, dfnames):
         '''
         Maps dataframes onto a 2D mesh (X, Y).
         Similar to mapXYZ but ignores the vertical (Z) dimension.
         '''
-        mesh_df = mesh_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
-        mesh_df.reset_index(drop=True, inplace=True)
+        if len(dataframes) != len(dfnames):
+            raise ValueError("dataframes and dfnames must have the same length.")
+
+        mesh_df = (mesh_df.replace([np.inf, -np.inf], np.nan)
+                          .dropna(subset=['x', 'y']).reset_index(drop=True))
+        if mesh_df.empty:
+            raise ValueError("mesh_df contains no finite x/y coordinates.")
         result_df = mesh_df.copy()
         distance_data = []
         
         for idx, df in enumerate(dataframes):
-            df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
-            df.reset_index(drop=True, inplace=True)
+            df = (df.replace([np.inf, -np.inf], np.nan)
+                    .dropna(subset=['x', 'y']).reset_index(drop=True))
+            if df.empty:
+                raise ValueError(f"Source dataframe {idx} contains no finite x/y coordinates.")
             if all(col in df.columns for col in ['x', 'y']):
                 
                 # KDTree built on X and Y only 
@@ -380,26 +662,27 @@ class DataMapper:
                         distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, distance_upper_bound=self.max_distance_xy, workers=self.njobs)
                         
                     else:
-                        distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
+                        distances, indices = tree.query(
+                            mesh_df[['x', 'y']].values,
+                            k=1,
+                            distance_upper_bound=self.max_distance_xy,
+                            workers=self.njobs,
+                        )
+
+                    if self.num_neighbors == 1:
+                        distances = distances[:, None]
+                        indices = indices[:, None]
 
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
-                        if self.num_neighbors != 1:
-                            remidxs = []
-                            for j in range(len(idxs)):
-                                if dists[j] == np.inf:
-                                    remidxs.append(j)
-                            idxs = [val for k, val in enumerate(idxs) if k not in remidxs]
-                            dists = [val for l, val in enumerate(dists) if l not in remidxs]
-                            for m in range(len(idxs)):
-                                if dists[m] == np.inf:
-                                    continue
-                                distance_data.append({'x': mesh_df.loc[idxs[m], 'x'],
-                                                      'y': mesh_df.loc[idxs[m], 'y'],
-                                                      'distance': dists[m]})
-                        else:
+                        valid = (idxs != len(df)) & np.isfinite(dists)
+                        for distance in np.asarray(dists)[valid]:
+                            # x/y identify the TARGET mesh row. The previous
+                            # implementation incorrectly indexed mesh_df with a
+                            # SOURCE-row index, producing wrong coordinates and
+                            # sometimes a KeyError.
                             distance_data.append({'x': mesh_df.loc[i, 'x'],
                                                   'y': mesh_df.loc[i, 'y'],
-                                                  'distance': dists})
+                                                  'distance': float(distance)})
 
                 # Query all points within a fixed distance ('dist')            
                 elif self.ckdMethod == 'dist':
@@ -409,11 +692,6 @@ class DataMapper:
 
                     # Calculate distances manually since query_ball_point only returns indices
                     for i, idxs in enumerate(indices):
-                        remidxs = []
-                        for j in range(len(idxs)):
-                            if dists[j] == np.inf:
-                                remidxs.append(j)
-                        idxs = [val for i, val in enumerate(idxs) if i not in remidxs]
                         for index in idxs:
                             distance_data.append({'x': mesh_df.loc[i, 'x'],
                                                   'y': mesh_df.loc[i, 'y'],
@@ -427,10 +705,14 @@ class DataMapper:
 
                     # First, query k-neighbors to find how far apart points typically are
                     distances, _ = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, workers=self.njobs)
-                    distThresh = np.max(distances, axis=0)
+                    distThresh = float(np.nanmax(distances))
 
                     # Re-query using the calculated dynamic threshold
                     distances, indices = tree.query(mesh_df[['x', 'y']].values, k=self.num_neighbors, distance_upper_bound=distThresh, workers=self.njobs)
+
+                    if self.num_neighbors == 1:
+                        distances = distances[:, None]
+                        indices = indices[:, None]
 
                     # update indexes based on distance appendix
                     for i, (dists, idxs) in enumerate(zip(distances, indices)):
@@ -449,7 +731,7 @@ class DataMapper:
                 elif self.ckdMethod == 'autoDist':
                     
                     distances, _ = tree.query(mesh_df[['x', 'y']].values, k=1, workers=self.njobs)
-                    distThresh = np.max(distances, axis=0)
+                    distThresh = float(np.nanmax(distances))
                     
                     # Re-query using the calculated dynamic threshold
                     indices = tree.query_ball_point(mesh_df[['x', 'y']].values, distThresh, workers=self.njobs)
@@ -464,20 +746,27 @@ class DataMapper:
                                                                       )})
         
                 # Statistical Aggregation (2D) 
-                if (self.num_neighbors > 1) | (self.ckdMethod != 'num'):
+                if (self.num_neighbors > 1) or (self.ckdMethod != 'num'):
                 
                     mesh_pts = mesh_df[['x', 'y']].values  # positional, aligned with the query order of `indices`
                     for col in df.columns:
                         if col not in ['x', 'y']:
                             arithmetic_means, geometric_means, harmonic_means = [], [], []
                                 
+                            numeric = pd.to_numeric(df[col], errors='coerce').to_numpy(dtype=float)
                             for i, row in enumerate(indices):
-                                if len(df) not in row:
-                                    valid_values = df.loc[row, col].values
-                                    coords = df.loc[row, ['x', 'y']].values if self.weighted else None
-                                    a_mean, g_mean, h_mean = self._agg_means(valid_values, coords, mesh_pts[i] if self.weighted else None)
-                                else:
-                                    a_mean, g_mean, h_mean = np.nan, np.nan, np.nan
+                                row = np.asarray(row, dtype=int)
+                                row = row[row != len(df)]
+                                if row.size:
+                                    finite = np.isfinite(numeric[row])
+                                    row = row[finite]
+                                valid_values = numeric[row]
+                                coords = df.loc[row, ['x', 'y']].values if (self.weighted and row.size) else None
+                                a_mean, g_mean, h_mean = self._agg_means(
+                                    valid_values,
+                                    coords,
+                                    mesh_pts[i] if self.weighted else None,
+                                )
 
                                 arithmetic_means.append(a_mean)
                                 geometric_means.append(g_mean)
@@ -507,8 +796,8 @@ class DataMapper:
                         if col not in ['x', 'y']:
                             nearest_value = []
                             
-                            for i in indices:
-                                nearest_value.append(df.loc[i, col])
+                            for i in indices[:, 0]:
+                                nearest_value.append(df.loc[i, col] if i != len(df) else np.nan)
                                 
                             if dfnames[idx] == '':
                                 result_df[f'{col}'] = nearest_value
@@ -517,23 +806,33 @@ class DataMapper:
                                 
         return result_df, distance_data
 
-    
     def create_mean_dfs(self, df):
         '''
-        Splits a multi-stat dataframe into three distinct dataframes for 
+        Splits a multi-stat dataframe into three distinct dataframes for
         Arithmetic, Geometric, and Harmonic averages respectively.
-        '''
-        arth_columns = [col for col in df.columns if '_arith' in col]
-        geom_columns = [col for col in df.columns if '_geom' in col]
-        harm_columns = [col for col in df.columns if '_harm' in col]
-        # Identify columns that are NOT statistical 
-        other_columns = [col for col in df.columns if col not in arth_columns + geom_columns + harm_columns]
 
-        # Create new DataFrames and strip suffic from column names
-        df_arth = df[other_columns + arth_columns].rename(columns={col: col.replace('_arith', '') for col in arth_columns})
-        df_geom = df[other_columns + geom_columns].rename(columns={col: col.replace('_geom', '') for col in geom_columns})
-        df_harm = df[other_columns + harm_columns].rename(columns={col: col.replace('_harm', '') for col in harm_columns})
-        
+        Statistical suffixes are matched only at the end of a column name.
+        This avoids accidentally classifying a non-statistical column that
+        merely contains text such as "_geom" in the middle of its name.
+        '''
+        arth_columns = [col for col in df.columns if str(col).endswith('_arith')]
+        geom_columns = [col for col in df.columns if str(col).endswith('_geom')]
+        harm_columns = [col for col in df.columns if str(col).endswith('_harm')]
+
+        statistical_columns = set(arth_columns + geom_columns + harm_columns)
+        other_columns = [col for col in df.columns if col not in statistical_columns]
+
+        def _build(stat_columns, suffix):
+            rename = {
+                col: str(col)[:-len(suffix)]
+                for col in stat_columns
+            }
+            return df[other_columns + stat_columns].rename(columns=rename).copy()
+
+        df_arth = _build(arth_columns, '_arith')
+        df_geom = _build(geom_columns, '_geom')
+        df_harm = _build(harm_columns, '_harm')
+
         return df_arth, df_geom, df_harm
 
     @staticmethod
@@ -570,6 +869,10 @@ class DataMapper:
         legible in a crowded subplot grid.
         '''
         distM = pd.DataFrame(distance_data)
+        if distM.empty or 'distance' not in distM:
+            raise ValueError(
+                "distance_data is empty; no source points were found inside the search distance."
+            )
         rms = np.sqrt(np.mean(distM['distance'] ** 2))   # RMS displacement (not MSE)
         mean_distance = np.mean(distM['distance'])
         std_distance = np.std(distM['distance'])
@@ -603,76 +906,198 @@ class DataMapper:
     def filter_and_rename(self, eca, minCut=5, maxCut=5, maxECa=50, minECa=0, keepInphase=False):
         '''
         Filters out outliers and crops the horizontal extent of the ECa data.
-        Standardizes column names for specific sensor configurations (HCP/PRP).
+        Standardizes the calibration input to X plus HCP/PRP/VCP coil columns.
 
-        NB: Column headers require the following format, horizontal co-planar (HCP) or perpendicular (PRP), followed by the coil spacing (i.e., 1.0 or 1.1)
-        e.g. ['HCP1.0', 'HCP1.0_inph', 'PRP1.1', 'PRP1.1_inph']
+        Coil matching is case-insensitive. In-phase fields are identified by
+        the ``_inph`` token and are excluded unless ``keepInphase=True``.
         '''
-        # Compute xMin and xMax for the 'X' column specifically
-        xMin = eca['X'].min() + minCut
-        xMax = eca['X'].max() - maxCut
-        
-        ecainphcols = eca.filter(regex='HCP|PRP|VCP').columns.tolist()  # Find columns containing coil orientations (presumably should just by quadrature and in-phase measurements)
-                        
-        ecacols = [col for col in ecainphcols if '_inph' not in col]  # Isolate quadrature columns.
-        
-        ### Will mess around with this in a later version to more robsutly isolate coil orientation and spacing
-        # if any('_' in col for col in ecacols):     
-        #     filtcols = [s.replace('_', '', 1) for s in ecainphcols]
-        #     eca.rename(columns=dict(zip(ecainphcols, filtcols)), inplace=True)
-        #     ecainphcols = eca.filter(regex='HCP|PRP|VCP').columns.tolist()
-        #     ecacols = [col for col in ecainphcols if '_inph' not in col]
-            
-        # Filter the DataFrame with corrected conditions
+        if 'X' not in eca.columns:
+            raise KeyError(
+                "eca must contain the along-profile coordinate column 'X'. "
+                f"Available columns: {eca.columns.tolist()}"
+            )
+        if minCut < 0 or maxCut < 0:
+            raise ValueError("minCut and maxCut cannot be negative.")
+        if minECa >= maxECa:
+            raise ValueError("minECa must be smaller than maxECa.")
+
+        eca = eca.copy()
+        eca['X'] = pd.to_numeric(eca['X'], errors='coerce')
+        eca = eca.replace([np.inf, -np.inf], np.nan).dropna(subset=['X'])
+        if eca.empty:
+            raise ValueError("eca contains no finite X coordinates.")
+
+        def _is_coil(col):
+            upper = str(col).upper()
+            return any(tag in upper for tag in ('HCP', 'PRP', 'VCP'))
+
+        ecainphcols = [col for col in eca.columns if _is_coil(col)]
+        ecacols = [
+            col for col in ecainphcols
+            if '_INPH' not in str(col).upper()
+        ]
+
+        if not ecacols:
+            raise ValueError(
+                "No ECa coil columns were found. Expected names containing "
+                "HCP, PRP, or VCP.\n"
+                f"Available columns: {eca.columns.tolist()}"
+            )
+
+        # Convert selected measurements before spatial/value filtering. This
+        # prevents string/object columns from failing numeric comparisons.
+        for col in ecainphcols:
+            eca[col] = pd.to_numeric(eca[col], errors='coerce')
+
+        finite_x = eca['X'].to_numpy(dtype=float)
+        xMin = float(np.nanmin(finite_x)) + float(minCut)
+        xMax = float(np.nanmax(finite_x)) - float(maxCut)
+        if not np.isfinite(xMin) or not np.isfinite(xMax) or xMin >= xMax:
+            raise ValueError(
+                "The X cuts remove the full profile; reduce minCut/maxCut or check X."
+            )
+
         startLen = len(eca)
-        eca = eca.loc[(eca['X'] > xMin) & (eca['X'] < xMax)]
+        eca = eca.loc[(eca['X'] >= xMin) & (eca['X'] <= xMax)].copy()
         xFiltLen = len(eca)
+
+        # Retain rows for which every calibration ECa coil is finite and lies
+        # inside the requested strict range.
         for col in ecacols:
-            eca = eca.loc[(eca[col] > minECa) & (eca[col] < maxECa)]
+            eca = eca.loc[
+                np.isfinite(eca[col]) &
+                (eca[col] > minECa) &
+                (eca[col] < maxECa)
+            ].copy()
         ecaFiltLen = len(eca)
-    
-        # Print how many measurements are filtered using X and ECa filters.
-        print('Started with ' + str(startLen) + ' matched elements and measurements. \n' +
-              str(startLen - xFiltLen) + '(' + str((startLen - xFiltLen)/startLen) + ' %) matched points removed from spatial filtering. \n' +
-              str(xFiltLen - ecaFiltLen) + '(' + str((xFiltLen - ecaFiltLen)/ecaFiltLen) + ' %) matched points removed from ECa filtering.')
-    
-        # Select subset of columns
-        subs = ['X']
-        if keepInphase:
-            for col in ecainphcols:
-                subs.append(col)
-        else:
-            for col in ecacols:
-                subs.append(col)
-        
-        eca_subs = eca[subs]
-        
-        # Isolate necessary columns
-        eca_df = eca_subs
-        
-        return eca_df
-    
+
+        spatial_pct = 100.0 * (startLen - xFiltLen) / startLen if startLen else np.nan
+        eca_pct = 100.0 * (xFiltLen - ecaFiltLen) / xFiltLen if xFiltLen else np.nan
+        print(
+            f"Started with {startLen} matched elements and measurements.\n"
+            f"{startLen - xFiltLen} ({spatial_pct:.2f}%) matched points removed "
+            "by spatial filtering.\n"
+            f"{xFiltLen - ecaFiltLen} ({eca_pct:.2f}%) matched points removed "
+            "by ECa filtering."
+        )
+
+        if eca.empty:
+            raise ValueError(
+                "No matched rows remain after the X and ECa filters. "
+                "Inspect the ECa ranges and the X cut settings."
+            )
+
+        selected = ecainphcols if keepInphase else ecacols
+        return eca[['X'] + selected].copy()
+
     def process_and_bin_data(self, eca_df, final_df, path, filename_ec, filename_eca,
                              nbins=300, xDis=0.5, zLayers=20, interpMethod='nearest',
-                             useGeomspace=True):
+                             useGeomspace=True, maxDpth=None, min_thick=None, d0=0.0,
+                             smoothEC=False, smoothMethod='mean',
+                             smoothWindow=5, savgolPolyorder=2):
         '''
         Creates a structured 2D grid from unorganized survey data. 
         - Crops EC data to ECa bounds.
         - Interpolates conductivity onto a mesh.
         - Bins the results horizontally (X) for final profile generation.
+        - Optionally smooths each final ERT conductivity profile across depth
+          columns (within rows) before export.
+
+        Parameters
+        ----------
+        maxDpth : float or None, default None
+            Maximum depth override. When set, z_min is overridden to -maxDpth.
+        min_thick : float or None, default None
+            Thinnest (top) layer thickness when generating geometrically growing
+            depth layers.
+        d0 : float, default 0.0
+            Top elevation/depth baseline for geometric layer generation.
+        smoothEC : bool, default False
+            If True, smooth df_ec across depth columns for each row. The ECa
+            dataframe is not smoothed.
+        smoothMethod : {'mean', 'median', 'savgol'}, default 'mean'
+            'mean'   : centered rolling arithmetic mean across depth layers.
+            'median' : centered rolling median across depth layers.
+            'savgol' : Savitzky-Golay polynomial smoothing across depth layers.
+                       Standard Savitzky-Golay assumes equally spaced samples,
+                       so this method requires useGeomspace=False.
+        smoothWindow : int, default 5
+            Odd number of adjacent depth columns in the centered smoothing
+            window. Must be >= 3 when smoothEC=True.
+        savgolPolyorder : int, default 2
+            Polynomial order for Savitzky-Golay smoothing. Must be smaller
+            than smoothWindow.
         '''
-        # Extract values from eca_df and final_df
-        eca = eca_df.values
-        ec = np.array(final_df[['X', 'Z', 'Conductivity(mS/m)']])
+        if int(nbins) < 2:
+            raise ValueError("nbins must be at least 2.")
+        if float(xDis) <= 0:
+            raise ValueError("xDis must be greater than 0.")
+        if int(zLayers) < 2:
+            raise ValueError("zLayers must be at least 2.")
+        if interpMethod not in {'nearest', 'linear', 'cubic'}:
+            raise ValueError("interpMethod must be 'nearest', 'linear', or 'cubic'.")
+
+        valid_smooth_methods = {'mean', 'median', 'savgol'}
+        if smoothEC:
+            if smoothMethod not in valid_smooth_methods:
+                raise ValueError(
+                    "smoothMethod must be 'mean', 'median', or 'savgol'."
+                )
+            if int(smoothWindow) != smoothWindow or int(smoothWindow) < 3:
+                raise ValueError("smoothWindow must be an integer >= 3.")
+            smoothWindow = int(smoothWindow)
+            if smoothWindow % 2 == 0:
+                raise ValueError(
+                    "smoothWindow must be odd (for example 3, 5, or 7) so the "
+                    "window is centered on a depth layer."
+                )
+            if smoothMethod == 'savgol':
+                if useGeomspace:
+                    raise ValueError(
+                        "smoothMethod='savgol' requires useGeomspace=False because "
+                        "standard Savitzky-Golay filtering assumes equally spaced "
+                        "depth samples. Use 'mean'/'median' with geometric depth "
+                        "spacing, or set useGeomspace=False."
+                    )
+                if int(savgolPolyorder) != savgolPolyorder or int(savgolPolyorder) < 0:
+                    raise ValueError("savgolPolyorder must be a non-negative integer.")
+                savgolPolyorder = int(savgolPolyorder)
+                if savgolPolyorder >= smoothWindow:
+                    raise ValueError(
+                        "savgolPolyorder must be smaller than smoothWindow."
+                    )
+
+        required_final = ['X', 'Z', 'Conductivity(mS/m)']
+        missing_final = [c for c in required_final if c not in final_df.columns]
+        if missing_final:
+            raise KeyError(f"final_df is missing required columns: {missing_final}")
+        if 'X' not in eca_df.columns or eca_df.shape[1] < 2:
+            raise KeyError("eca_df must contain 'X' plus at least one ECa coil column.")
+
+        # Extract finite numeric values from eca_df and final_df.
+        eca_clean = eca_df.apply(pd.to_numeric, errors='coerce')
+        final_clean = final_df[required_final].apply(pd.to_numeric, errors='coerce')
+        eca_clean = eca_clean.replace([np.inf, -np.inf], np.nan).dropna()
+        final_clean = final_clean.replace([np.inf, -np.inf], np.nan).dropna()
+        if eca_clean.empty or final_clean.empty:
+            raise ValueError("No finite ECa or ERT conductivity rows are available for binning.")
+
+        eca = eca_clean.to_numpy(dtype=float)
+        ec = final_clean.to_numpy(dtype=float)
         print('Initial length ECa', len(eca))
         print('Initial length EC', len(ec))
         print(np.min(ec[:, 2]))
     
-        minX = np.round(np.min(eca[:, 0]), 1)
-        maxX = np.round(np.max(eca[:, 0]), 1)
+        minX = np.round(np.min(eca[:, 0]), 2)
+        maxX = np.round(np.max(eca[:, 0]), 2)
     
-        # Crop the data based on the location of EMI calibration data
-        ec = ec[np.where((ec[:, 0] >= minX) & (ec[:, 0] <= maxX)), :][0]
+        # Crop the ERT model to the horizontal support of the calibration ECa.
+        ec = ec[(ec[:, 0] >= minX) & (ec[:, 0] <= maxX), :]
+        if ec.size == 0:
+            raise ValueError(
+                "No ERT conductivity cells overlap the filtered ECa X range "
+                f"({minX:.3f} to {maxX:.3f} m)."
+            )
         print('After crop length ECa', len(eca))
         print('After crop length EC', len(ec))
     
@@ -681,21 +1106,67 @@ class DataMapper:
         z = ec[:, 1]
         cond = ec[:, 2]
         xi = np.arange(np.min(x), np.max(x), xDis)
+        if xi.size == 0 or not np.isclose(xi[-1], np.max(x)):
+            xi = np.append(xi, np.max(x))
     
         # Choose spacing method for z
         z_min, z_max = np.min(z), np.max(z)
+        if maxDpth is not None:
+            z_min = -abs(float(maxDpth))
+
         if useGeomspace:
-            if z_min >= 0 or z_max >= 0:
+            if min_thick is not None:
+                def _geom_growth_depths(max_depth, n_layers, first_thk=0.25, top=0.0, include_surface=False):
+                    """n_layers layers from `top` to exactly max_depth, thicknesses growing
+                    geometrically. Guarantees: thinnest (top) layer == first_thk, monotonic
+                    increase, deepest interface == max_depth. Returns (interfaces, thicknesses)."""
+                    span = max_depth - top
+                    n = int(n_layers)
+                    if first_thk * n >= span:                       # too many thick layers -> uniform
+                        thk = np.full(n, span / n)
+                    else:
+                        lo, hi = 1.0 + 1e-9, 10.0                    # bisection for growth ratio r
+                        f = lambda r: first_thk * (r**n - 1) / (r - 1) - span
+                        for _ in range(200):
+                            mid = 0.5 * (lo + hi)
+                            hi, lo = (mid, lo) if f(mid) > 0 else (hi, mid)
+                        thk = first_thk * (0.5 * (lo + hi)) ** np.arange(n)
+                    bottoms = top + np.cumsum(thk)
+                    interfaces = np.concatenate([[top], bottoms]) if include_surface else bottoms
+                    return interfaces, thk
+
+                zi, thckns = _geom_growth_depths(-z_min, zLayers, first_thk=min_thick, top=d0, include_surface=False)
+                zi *= -1
+                zi = zi[::-1]
+            elif z_min >= 0 or z_max >= 0:
                 raise ValueError("For geomspace, Z values must be negative (depths).")
-            zi = -np.geomspace(abs(z_min), abs(z_max), zLayers)
+            else:
+                zi = -np.geomspace(abs(z_min), abs(z_max), zLayers)
         else:
             zi = np.linspace(z_min, z_max, zLayers)
 
         # Perform 2D grid interpolation                         
         xi, zi = np.meshgrid(xi, zi)
         condi = griddata((x, z), cond, (xi, zi), method=interpMethod)
+
+        # Linear/cubic griddata returns NaN outside the convex hull.  A single
+        # missing layer makes EMagPy's forward response NaN for that calibration
+        # row, so fill only those gaps with nearest-neighbour estimates.
+        if interpMethod != 'nearest' and np.isnan(condi).any():
+            gap = np.isnan(condi)
+            nearest = griddata((x, z), cond, (xi, zi), method='nearest')
+            condi = np.where(np.isfinite(condi), condi, nearest)
+
+            # Report extrapolation distance for auditability
+            dgap, _ = cKDTree(np.c_[x, z]).query(np.c_[xi[gap], zi[gap]])
+            print(f'   filled {gap.sum()} of {gap.size} grid cells '
+                  f'({100 * gap.mean():.1f}%) outside the ERT convex hull by nearest '
+                  f'neighbour; max extrapolation {dgap.max():.2f} m')
+            if dgap.max() > self.max_distance_xy:      
+                print(f'   ! WARNING: fill reaches {dgap.max():.1f} m - exceeds the '
+                      'EMI footprint; consider trimming instead')
                                  
-       #Flatten Results back into coordinate list
+        # Flatten Results back into coordinate list
         x = np.unique(xi)
         z = np.unique(zi)
         condxz = np.array(np.meshgrid(x, z)).T.reshape(-1, 2)
@@ -708,8 +1179,8 @@ class DataMapper:
 
         # Binning the Inverted Conductivity (EC)                          
         midDepths = -np.unique(ec[:, 1])
-        bins = np.round(np.linspace(minX, maxX, nbins + 1), 1)
-        binID = np.digitize(ec[:, 0], bins)
+        bins = np.linspace(minX, maxX, nbins + 1)
+        binID = np.clip(np.digitize(ec[:, 0], bins) - 1, 0, nbins - 1)
     
         ertEC = np.empty((nbins, len(midDepths)))
         midDepthsr = midDepths[::-1]
@@ -718,35 +1189,108 @@ class DataMapper:
         for i in range(nbins):
             for j in range(len(midDepths)):
                 idepth = np.isclose(ec[:, 1], -midDepthsr[j], atol=1e-3)
-                ibins = binID == (i + 1)
+                ibins = binID == i
                 valid_points = ec[idepth & ibins, 2]
                 ertEC[i, j] = np.mean(valid_points) if valid_points.size > 0 else np.nan
     
-        df_ec = pd.DataFrame(np.round(ertEC, 3), columns=[f'd{col:.3f}' for col in midDepthsr])
+        df_ec = pd.DataFrame(np.round(ertEC, 2), columns=[f'd{col:.2f}' for col in midDepthsr])
     
         # Binning for eca
-        binID = np.digitize(eca[:, 0], bins)
-        eca2 = np.zeros((nbins, eca.shape[1] - 1))
+        binID = np.clip(np.digitize(eca[:, 0], bins) - 1, 0, nbins - 1)
+        eca2 = np.full((nbins, eca.shape[1] - 1), np.nan)
     
         for i in range(nbins):
-            ie = binID == (i + 1)
+            ie = binID == i
             if np.sum(ie) > 0:
-                eca2[i, :] = np.mean(eca[ie, 1:], axis=0)
+                eca2[i, :] = np.nanmean(eca[ie, 1:], axis=0)
     
         headers = eca_df.columns[1:].tolist()
-        df_eca = pd.DataFrame(np.round(eca2, 1), columns=headers)
+        df_eca = pd.DataFrame(np.round(eca2, 2), columns=headers)
 
-        # Drop Empty Bins                         
-        rows_to_drop = df_eca.eq(0).any(axis=1)
-        df_eca = df_eca[~rows_to_drop].reset_index(drop=True)
-        df_ec = df_ec[~rows_to_drop].reset_index(drop=True)
+        # EMagPy requires row-for-row calibration pairs and a complete EC
+        # profile.  Remove any bin that is incomplete in either file.
+        valid_rows = (np.isfinite(df_eca.to_numpy(dtype=float)).all(axis=1) &
+                      np.isfinite(df_ec.to_numpy(dtype=float)).all(axis=1))
+        n_dropped = int((~valid_rows).sum())
+        df_eca = df_eca.loc[valid_rows].reset_index(drop=True)
+        df_ec = df_ec.loc[valid_rows].reset_index(drop=True)
+        if len(df_eca) < 2:
+            raise ValueError(
+                "Fewer than two complete co-located calibration rows remain. "
+                "Reduce nbins, use a larger xDis, or inspect spatial overlap."
+            )
+        if (df_ec.to_numpy(dtype=float) <= 0).any():
+            raise ValueError(
+                "Interpolated ERT conductivity contains zero or negative values. "
+                "This can occur from higher-order interpolation overshoot; use "
+                "interpMethod='linear' or 'nearest', or inspect the ERT model."
+            )
+
+        # Optional smoothing across DEPTH columns within each row.
+        # This changes the vertical conductivity profile supplied to the EMI
+        # forward model, while leaving the measured/binned ECa data untouched.
+        if smoothEC:
+            if smoothWindow > df_ec.shape[1]:
+                raise ValueError(
+                    f"smoothWindow={smoothWindow} exceeds the number of depth "
+                    f"columns ({df_ec.shape[1]}). Reduce smoothWindow or increase zLayers."
+                )
+
+            if smoothMethod == 'mean':
+                # Transpose so pandas rolls down each original row's depth profile.
+                # min_periods=1 retains the shallowest/deepest layers by using the
+                # available truncated centered window at the profile edges.
+                df_ec = (df_ec.T
+                               .rolling(window=smoothWindow, center=True, min_periods=1)
+                               .mean()
+                               .T)
+
+            elif smoothMethod == 'median':
+                df_ec = (df_ec.T
+                               .rolling(window=smoothWindow, center=True, min_periods=1)
+                               .median()
+                               .T)
+
+            elif smoothMethod == 'savgol':
+                smoothed = savgol_filter(
+                    df_ec.to_numpy(dtype=float),
+                    window_length=smoothWindow,
+                    polyorder=savgolPolyorder,
+                    axis=1,
+                    mode='interp'
+                )
+                df_ec = pd.DataFrame(smoothed, columns=df_ec.columns, index=df_ec.index)
+
+            # Keep the historical EC export precision.
+            df_ec = df_ec.round(3)
+
+            # Mean/median preserve positivity when inputs are positive, but
+            # polynomial smoothing can overshoot. Do not pass a non-physical
+            # conductivity profile silently to the forward model.
+            if (~np.isfinite(df_ec.to_numpy(dtype=float))).any():
+                raise ValueError(
+                    "Depth smoothing produced non-finite ERT conductivity values."
+                )
+            if (df_ec.to_numpy(dtype=float) <= 0).any():
+                raise ValueError(
+                    "Depth smoothing produced zero or negative ERT conductivity. "
+                    "Reduce smoothWindow/savgolPolyorder or use mean/median smoothing."
+                )
+
+            print(
+                f"Smoothed ERT conductivity across depth columns: "
+                f"method={smoothMethod}, window={smoothWindow}" +
+                (f", polyorder={savgolPolyorder}" if smoothMethod == 'savgol' else '')
+            )
 
         # Export Processed Data                         
+        os.makedirs(path, exist_ok=True)
         df_ec.to_csv(os.path.join(path, filename_ec), index=False)
         df_eca.to_csv(os.path.join(path, filename_eca), index=False)
     
         print('After binning length ECa', len(df_eca))
         print('After binning length EC', len(df_ec))
+        print('Incomplete calibration bins removed', n_dropped)
     
         return df_eca, df_ec
 
@@ -833,7 +1377,90 @@ class DataMapper:
             for _c in keep_cols:
                 if _c in mesh.columns:
                     sup[_c] = mesh[_c].values
-        self.fill_fraction = float(1.0 - sup["supported"].mean())
+        self.unsupported_fraction = float(1.0 - sup["supported"].mean())
+        # Backward-compatible alias retained for older notebooks.
+        self.fill_fraction = self.unsupported_fraction
+        return sup
+
+    def support_field_xy(self, mesh_df, source_df, depth_col="Z",
+                         keep_cols=None, group_col=None):
+        """Describe horizontal support for :meth:`mapXY` at every target row.
+
+        Unlike ``support_field``, this method deliberately ignores vertical
+        separation.  It is therefore the matching diagnostic for ``mapXY``.
+
+        Parameters
+        ----------
+        mesh_df : pandas.DataFrame
+            Target rows containing ``x`` and ``y``. ``depth_col`` is copied
+            when present so the result can be plotted as an X-depth section.
+        source_df : pandas.DataFrame
+            Source observations containing ``x`` and ``y``.
+        depth_col : str, default "Z"
+            Optional target depth/elevation column to retain.
+        keep_cols : sequence of str or None
+            Additional target columns to copy to the result (for example X).
+        group_col : str or None
+            Optional source identifier.  When supplied, ``n_soundings`` is the
+            number of unique groups among the accepted neighbors.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Target coordinates, nearest horizontal distance ``nn_dist``,
+            effective neighbor count ``n_eff``, and ``supported`` flag.
+        """
+        mesh = (mesh_df.replace([np.inf, -np.inf], np.nan)
+                       .dropna(subset=["x", "y"]).reset_index(drop=True))
+        src = (source_df.replace([np.inf, -np.inf], np.nan)
+                        .dropna(subset=["x", "y"]).reset_index(drop=True))
+        if mesh.empty or src.empty:
+            raise ValueError("mesh_df and source_df need finite x/y coordinates.")
+
+        tree = cKDTree(src[["x", "y"]].values)
+        k = max(int(self.num_neighbors), 1)
+        dist, idx = tree.query(
+            mesh[["x", "y"]].values,
+            k=k,
+            distance_upper_bound=self.max_distance_xy,
+            workers=self.njobs,
+        )
+        if k == 1:
+            dist, idx = dist[:, None], idx[:, None]
+
+        groups = (src[group_col].to_numpy()
+                  if group_col is not None and group_col in src.columns else None)
+        rows = []
+        for i in range(len(mesh)):
+            valid = (idx[i] != len(src)) & np.isfinite(dist[i])
+            d = dist[i][valid]
+            j = idx[i][valid]
+            n_eff = int(j.size)
+            row = {
+                "x": mesh.loc[i, "x"],
+                "y": mesh.loc[i, "y"],
+                "nn_dist": float(np.min(d)) if n_eff else np.nan,
+                # Keep the same distance-column schema as support_field().
+                # For an XY-only search, total distance equals horizontal
+                # distance and vertical distance is not evaluated.
+                "nn_dist_xy": float(np.min(d)) if n_eff else np.nan,
+                "nn_dist_z": np.nan,
+                "n_eff": n_eff,
+                "supported": bool(n_eff),
+            }
+            if depth_col in mesh.columns:
+                row[depth_col] = mesh.loc[i, depth_col]
+            if groups is not None:
+                row["n_soundings"] = int(np.unique(groups[j]).size) if n_eff else 0
+            rows.append(row)
+
+        sup = pd.DataFrame(rows)
+        if keep_cols:
+            for col in keep_cols:
+                if col in mesh.columns and col not in sup.columns:
+                    sup[col] = mesh[col].values
+        self.unsupported_fraction = float(1.0 - sup["supported"].mean())
+        self.fill_fraction = self.unsupported_fraction
         return sup
 
     def support_by_depth(self, support_df, depth_col="Z", nbins=12):
@@ -841,13 +1468,25 @@ class DataMapper:
         where (with depth) interpolation confidence collapses, and would flag
         a non-informative pairing before any inversion is run."""
         s = support_df.copy()
+        required = {depth_col, "supported", "nn_dist", "n_eff"}
+        missing = sorted(required.difference(s.columns))
+        if missing:
+            raise KeyError(f"support_df is missing required columns: {missing}")
         s["depth_bin"] = pd.cut(s[depth_col], bins=nbins)
+        aggregations = {
+            "n_cells": ("supported", "size"),
+            "frac_supported": ("supported", "mean"),
+            "median_nn_dist": ("nn_dist", "median"),
+            "mean_n_eff": ("n_eff", "mean"),
+        }
+        # XYZ support provides both components. XY support now exposes the
+        # same schema, but these guards also accept older support tables.
+        if "nn_dist_xy" in s.columns:
+            aggregations["median_nn_dist_xy"] = ("nn_dist_xy", "median")
+        if "nn_dist_z" in s.columns:
+            aggregations["median_nn_dist_z"] = ("nn_dist_z", "median")
         return (s.groupby("depth_bin", observed=True)
-                 .agg(n_cells=("supported", "size"),
-                      frac_supported=("supported", "mean"),
-                      median_nn_dist=("nn_dist", "median"),
-                      median_nn_dist_z=("nn_dist_z", "median"),
-                      mean_n_eff=("n_eff", "mean"))
+                 .agg(**aggregations)
                  .reset_index())
 
     # ================================================================== #

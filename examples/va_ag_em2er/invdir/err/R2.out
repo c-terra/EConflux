@@ -2,7 +2,7 @@
 
  >> R  2    R e s i s t i v i t y   I n v e r s i o n   v4.10 <<
 
- >> D a t e : 01 - 07 - 2026
+ >> D a t e : 20 - 10 - 2026
  >> My beautiful survey                                                             
  >> F o r w a r d   S o l u t i o n   S e l e c t e d <<
  >> Reading start resistivity from resistivity.dat               
@@ -14,9 +14,9 @@
 
                      Timing Summary
                      ==============
-     Total time taken:                                 5. s
-     Percent time taken forming element equations:    0.4 %
-     Percent time taken solving forward  equations:  55.6 %
+     Total time taken:                                 8. s
+     Percent time taken forming element equations:    0.8 %
+     Percent time taken solving forward  equations:  65.0 %
      Percent time taken forming Jacobian:             0.0 %
      Percent time taken solving inverse equations:    0.0 %
      Percent time taken calculating res. matrix:      0.0 %

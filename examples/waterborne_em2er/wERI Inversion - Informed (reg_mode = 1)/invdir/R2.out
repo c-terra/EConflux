@@ -2,7 +2,7 @@
 
  >> R  2    R e s i s t i v i t y   I n v e r s i o n   v4.10 <<
 
- >> D a t e : 02 - 07 - 2026
+ >> D a t e : 20 - 10 - 2026
  >> My beautiful survey                                                             
  >> I n v e r s e   S o l u t i o n   S e l e c t e d <<
  >> Reading start resistivity from res0.dat                      
@@ -21,16 +21,16 @@
  >> Total Memory required is:          0.001 Gb
 
    Iteration   1
-     Initial RMS Misfit:         7.03       Number of data ignored:     0
-     Alpha:          20.087   RMS Misfit:        1.20  Roughness:       20.057
-     Alpha:           9.323   RMS Misfit:        1.07  Roughness:       20.999
-     Alpha:           4.328   RMS Misfit:        1.00  Roughness:       21.496
+     Initial RMS Misfit:         6.82       Number of data ignored:     0
+     Alpha:          20.096   RMS Misfit:        1.14  Roughness:       18.675
+     Alpha:           9.328   RMS Misfit:        1.01  Roughness:       19.499
+     Alpha:           4.329   RMS Misfit:        0.94  Roughness:       19.923
      Step length set to   1.00000
-     Final RMS Misfit:        1.00
+     Final RMS Misfit:        0.94
 
  Cannot fit quadratic through step lengths
      Step length set to   1.00000
-     Final RMS Misfit:        1.00
+     Final RMS Misfit:        0.94
 
  Solution converged - Outputing results to file
 
@@ -45,11 +45,11 @@
 
                      Timing Summary
                      ==============
-     Total time taken:                                 0. s
-     Percent time taken forming element equations:    0.8 %
-     Percent time taken solving forward  equations:  77.2 %
+     Total time taken:                                 1. s
+     Percent time taken forming element equations:    2.0 %
+     Percent time taken solving forward  equations:  74.9 %
      Percent time taken forming Jacobian:             0.0 %
-     Percent time taken solving inverse equations:    0.6 %
+     Percent time taken solving inverse equations:    0.8 %
      Percent time taken calculating res. matrix:      0.0 %
 
                      Timing Details

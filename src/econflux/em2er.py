@@ -156,7 +156,8 @@ class em2er_map:
         mapvars: Optional[Dict[str, Any]] = dict(num_neighbors=5, max_distance_xy=5, max_distance_z=0.3),
         emires_col: Optional[str] = "_Linear Resistivity_arith",
         keep_cols: Optional[Tuple[str, str, str]] = ("X", "Y", "Z"),
-        meshobj: Optional = None
+        meshobj: Optional = None,
+        units: Optional = 'm'
     ):
             
         self.mesh = mesh
@@ -171,6 +172,7 @@ class em2er_map:
         self.emires_col = emires_col
         self.keep_cols = keep_cols
         self.meshobj = meshobj
+        self.units = units
 
         if type(mesh) == str:
             self.mesh = pd.read_csv(mesh)
@@ -219,12 +221,118 @@ class em2er_map:
         emi_inv = emi_inv.rename(columns={'X': 'x', 'Y': 'y', 'Depth': 'Z'})
         self.emi_inv = emi_inv
 
-    def map_to_mesh(self, correctTopo='auto', topoTol=None, surfacePts=12):
-        	#map EMI data to ERI mesh using select parameters
+    def map_to_mesh(
+        self,
+        correctTopo: str or bool = 'auto',
+        topoTol: Optional[float] = None,
+        surfacePts: int = 12,
+        maxDpth: Optional[float] = None,
+        elev_or_depth: Optional[str] = None,
+        zBySounding: bool = False,
+        zTol: float = 1.0
+    ):
+        """
+        Map EMI inversion models onto the ERI mesh using distance-weighted
+        spatial interpolation. Optionally applies topographically corrected
+        mapping and filters EMI points by a maximum depth cutoff.
+
+        correctTopo : {"auto", True, False}
+            Controls topography correction during spatial mapping. "auto"
+            automatically detects whether topographic surface correction is
+            required.
+        topoTol : Optional[float]
+            Elevation tolerance threshold for topographic surface matching.
+            If provided, also acts as the tolerance for coordinate similarity
+            checks unless overridden by `zTol`.
+        surfacePts : int
+            Number of near-surface points used to construct the topography surface.
+            Default is 12.
+        maxDpth : Optional[float]
+            Maximum depth cutoff value. EMI data points below this depth are
+            excluded prior to spatial mapping onto the mesh.
+        elev_or_depth : {"elev", "depth", None}
+            Specifies whether the Z-coordinates in the EMI models and ERI mesh
+            are represented as elevations ("elev") or depths ("depth"). Required
+            when `maxDpth` is defined or when verifying coordinate representation.
+        zBySounding : bool
+            If True and `elev_or_depth` is "elev", shifts each EMI sounding
+            independently from an elevation to a depth relative to its local
+            surface elevation. If False, all soundings are shifted at once relative
+            to the overall maximum elevation in the EMI dataset. Default is False.
+        zTol : float
+            Tolerance threshold for surface Z-coordinate similarity checks.
+            When `elev_or_depth` is "elev", checks similarity between maximum Z
+            values (`emi_z_max` and `mesh_z_max`). When `elev_or_depth` is "depth",
+            checks similarity between minimum Z values (`emi_z_min` and `mesh_z_min`).
+            Default is 1.0.
+        """
+        if self.meshUTM is None or self.emi_inv is None:
+            raise RuntimeError("Run prep_mesh_utm() and load_emi() before map_to_mesh().")
+
+        # Validate coordinate representation inputs
+        if maxDpth is not None and elev_or_depth is None:
+            raise ValueError("elev_or_depth must be specified ('elev' or 'depth') when maxDpth is provided.")
+
+        # Ensure representation consistency between EMI models and ERI mesh
+        if elev_or_depth is not None:
+            if elev_or_depth not in ('elev', 'depth'):
+                raise ValueError(f"Unknown elev_or_depth setting: '{elev_or_depth}'. Expected 'elev' or 'depth'.")
+
+            tol = topoTol if topoTol is not None else zTol
+
+            if elev_or_depth == 'elev':
+                # Check similarity between maximum Z values (surface elevations)
+                emi_z_max = float(self.emi_inv['Z'].max())
+                mesh_z_max = float(self.meshUTM['Z'].max())
+                diff = abs(emi_z_max - mesh_z_max)
+
+                if diff > tol:
+                    raise ValueError(
+                        f"Representation mismatch: elev_or_depth='elev', but maximum Z values differ by {diff:.2f} "
+                        f"(EMI max Z: {emi_z_max:.2f}, mesh max Z: {mesh_z_max:.2f}), exceeding tolerance ({tol}). "
+                        f"Verify that both datasets are represented as elevations. If representation is correct, increase zTol."
+                    )
+            elif elev_or_depth == 'depth':
+                # Check similarity between minimum Z values (surface level baseline)
+                emi_z_min = float(self.emi_inv['Z'].min())
+                mesh_z_min = float(self.meshUTM['Z'].min())
+                diff = abs(emi_z_min - mesh_z_min)
+
+                if diff > tol:
+                    raise ValueError(
+                        f"Representation mismatch: elev_or_depth='depth', but minimum Z values differ by {diff:.2f} "
+                        f"(EMI min Z: {emi_z_min:.2f}, mesh min Z: {mesh_z_min:.2f}), exceeding tolerance ({tol}). "
+                        f"Verify that both datasets are represented as depths. If representation is correct, increase zTol."
+                    )
+
+        # Apply depth cutoff filtering if maxDpth is defined
+        if maxDpth is not None:
+            if elev_or_depth == 'elev':
+                if zBySounding:
+                    # Shift each EMI sounding independently based on its local surface elevation
+                    group_cols = [c for c in ['x', 'y'] if c in self.emi_inv.columns]
+                    if group_cols:
+                        z_surface = self.emi_inv.groupby(group_cols)['Z'].transform('max')
+                    else:
+                        z_surface = self.emi_inv['Z'].max()
+                    depth = z_surface - self.emi_inv['Z']
+                else:
+                    # Shift all soundings at once relative to maximum overall elevation
+                    z_surface = self.emi_inv['Z'].max()
+                    depth = z_surface - self.emi_inv['Z']
+            else:  # elev_or_depth == 'depth'
+                depth = self.emi_inv['Z'].abs()
+
+            # Filter EMI points exceeding the maximum depth threshold
+            self.emi_inv = self.emi_inv[depth <= maxDpth].copy()
+
+        # Execute spatial mapping from EMI models to ERI mesh
         mapper = DataMapper(**self.mapvars)
-        self.mapper = mapper 
-        emi2mesh, dist = mapper.mapXYZ(self.meshUTM, [self.emi_inv], [''], topo_correct=correctTopo,
-                                       topo_tol=topoTol, surf_k=surfacePts)
+        self.mapper = mapper
+        emi2mesh, dist = mapper.mapXYZ(
+            self.meshUTM, [self.emi_inv], [''],
+            topo_correct=correctTopo, topo_tol=topoTol, surf_k=surfacePts
+        )
         self.emi2mesh = emi2mesh.copy()
         self.dist = dist
 
@@ -575,8 +683,8 @@ class em2er_map:
                 else:
                     xlim = None
             gcv = value_col + "_gcv"
-            rlabel = "pred / obs" if resid_space == "ratio" else r"residual $\log_{10}$"
-            rtitle = "LOOCV residuals (pred/obs)" if resid_space == "ratio" else "LOOCV residuals"    
+            rlabel = "Predicted / Observed" if resid_space == "ratio" else r"residual $\log_{10}$"
+            rtitle = "LOOCV Residuals (Pred/Obs)" if resid_space == "ratio" else "LOOCV residuals"    
             
             if figpath is not None:
                 nnfigname = figpath + 'nnDistance.png'
@@ -589,13 +697,13 @@ class em2er_map:
             
             if ax is not None:
                 if len(ax) == 3:
-                    mapper.plot_confidence_section(sup[sup["supported"]], "nn_dist",
+                    mapper.plot_confidence_section(sup[sup["supported"]], 'nn_dist',
                                                    x_col=xc, xlim=xlim,
-                                                   title="Spatial support (NN distance)", ax=ax[0],
+                                                   title="Spatial support (NN distance)", ax=ax[0], clabel=f'Nearest Neighbor Distance ({self.units})',
                                                    figname=nnfigname, plotDepth=plotDepth)
                     if gcv in disp.columns and np.isfinite(disp[gcv]).any():
                         mapper.plot_confidence_section(disp, gcv, x_col=xc, xlim=xlim,
-                                                       title="Local dispersion (" + gcv + ")",
+                                                       title="Local dispersion (" + gcv + ")", clabel=f'{value_col} Geometric Coeff.\nof Variation',
                                                        ax=ax[1], figname=gcvfigname, plotDepth=plotDepth)
         
                     mapper.plot_confidence_section(resid, "resid_log10", x_col=xc,
@@ -605,19 +713,13 @@ class em2er_map:
                                                    plotDepth=plotDepth)
             else:
                 mapper.plot_confidence_section(sup[sup["supported"]], "nn_dist",
-                                               x_col=xc, xlim=xlim,
+                                               x_col=xc, xlim=xlim, clabel=f'Nearest Neighbor Distance ({self.units})',
                                                title="Spatial support (NN distance)", figname=nnfigname,
                                                plotDepth=plotDepth)
                 if gcv in disp.columns and np.isfinite(disp[gcv]).any():
-                    mapper.plot_confidence_section(disp, gcv, x_col=xc, xlim=xlim,
+                    mapper.plot_confidence_section(disp, gcv, x_col=xc, xlim=xlim, clabel=f'{value_col} Geometric Coeff.\nof Variation',
                                                    title="Local dispersion (" + gcv + ")", figname=gcvfigname,
                                                    plotDepth=plotDepth)
-    
-                mapper.plot_confidence_section(resid, "resid_log10", x_col=xc,
-                                               xlim=xlim, center=0.0,
-                                               value_space=resid_space, clabel=rlabel,
-                                               title=rtitle, figname=loocvfigname,
-                                               plotDepth=plotDepth)
 
         print("EM2ER interpolation-confidence summary")
         print("  fill fraction: {:.1%}".format(results["fill_fraction"]))
@@ -626,7 +728,6 @@ class em2er_map:
         print("  linear factors  RMSE/MAE/bias: x{:.2f} / x{:.2f} / x{:.2f}".format(
             10 ** loocv["RMSE_log"], 10 ** loocv["MAE_log"], 10 ** loocv["bias_log"]))
         return results
-
 
 
 __all__ = ["local_grid_to_utm_along_line", "direct_local_grid_to_utm_along_line", "em2er_map"]
