@@ -49,4 +49,5 @@ pip install .[examples]
 
 ## Overview of EConflux Classes and Structure
 
-<img width="7089" height="4438" alt="econflux_flowchart" src="https://github.com/user-attachments/assets/54ce2f9d-de86-4e2d-97d8-501528849fe4" />
+<img width="8000" height="4500" alt="Figure_1" src="https://github.com/user-attachments/assets/1288fdc5-1c6b-4bc9-8c43-03cdd0dbaa89" />
+
